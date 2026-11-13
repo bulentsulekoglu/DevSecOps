@@ -15,6 +15,8 @@ jobs:
     steps:
       - name: Kodu indir
         uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       - name: Python ortamını hazırla
         run: |
@@ -35,8 +37,59 @@ jobs:
             -v "$PWD/app:/app" -w /app python:3.12-slim \
             .venv/bin/pytest -v -p no:cacheprovider
 
+  secret-scan:
+    runs-on: [self-hosted, linux]
+    steps:
+      - name: Kodu indir (tüm geçmişle)
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Gitleaks
+        run: |
+          docker run --rm -u "$(id -u):$(id -g)" \
+            -v "$PWD:/repo" -w /repo \
+            ghcr.io/gitleaks/gitleaks:v8.30.1 \
+            detect --source /repo --redact --verbose --no-banner
+
+  sast:
+    runs-on: [self-hosted, linux]
+    steps:
+      - name: Kodu indir
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Semgrep
+        run: |
+          docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
+            -v "$PWD:/src" -w /src \
+            semgrep/semgrep:1.170.0 \
+            semgrep scan --config p/default --config p/python \
+              --severity ERROR --severity WARNING --metrics=off --error
+
+  dependency-scan:
+    runs-on: [self-hosted, linux]
+    steps:
+      - name: Kodu indir
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Trivy (bağımlılıklar)
+        run: |
+          mkdir -p "$HOME/.cache/trivy"
+          docker run --rm -u "$(id -u):$(id -g)" \
+            -e TRIVY_CACHE_DIR=/cache \
+            -v "$HOME/.cache/trivy:/cache" \
+            -v "$PWD:/src:ro" \
+            ghcr.io/aquasecurity/trivy:0.69.3 \
+            fs --scanners vuln --severity HIGH,CRITICAL \
+              --ignore-unfixed --no-progress --exit-code 1 /src
+
   build-push:
-    needs: lint-test
+    needs: [lint-test, secret-scan, sast, dependency-scan]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: [self-hosted, linux]
     permissions:
@@ -45,6 +98,8 @@ jobs:
     steps:
       - name: Kodu indir
         uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       - name: GitHub Container Registry'ye giriş
         env:
@@ -59,12 +114,27 @@ jobs:
             --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
             -t "$IMAGE:${GITHUB_SHA::7}" -t "$IMAGE:latest" ./app
 
+      - name: İmajı Trivy ile tara
+        run: |
+          IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}
+          mkdir -p "$HOME/.cache/trivy"
+          docker save "$IMAGE:${GITHUB_SHA::7}" -o "$RUNNER_TEMP/image.tar"
+          docker run --rm -u "$(id -u):$(id -g)" \
+            -e TRIVY_CACHE_DIR=/cache \
+            -v "$HOME/.cache/trivy:/cache" \
+            -v "$RUNNER_TEMP:/scan:ro" \
+            ghcr.io/aquasecurity/trivy:0.69.3 \
+            image --input /scan/image.tar --severity HIGH,CRITICAL \
+              --ignore-unfixed --no-progress --exit-code 1
+
       - name: İmajı registry'ye gönder
         run: |
           IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}
           docker push "$IMAGE:${GITHUB_SHA::7}"
           docker push "$IMAGE:latest"
 
-      - name: Registry oturumunu kapat
+      - name: Geçici dosyaları ve oturumu temizle
         if: always()
-        run: docker logout ghcr.io
+        run: |
+          rm -f "$RUNNER_TEMP/image.tar"
+          docker logout ghcr.io
