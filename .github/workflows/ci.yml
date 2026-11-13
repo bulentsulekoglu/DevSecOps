@@ -34,3 +34,37 @@ jobs:
             -e PYTHONDONTWRITEBYTECODE=1 \
             -v "$PWD/app:/app" -w /app python:3.12-slim \
             .venv/bin/pytest -v -p no:cacheprovider
+
+  build-push:
+    needs: lint-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, linux]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Kodu indir
+        uses: actions/checkout@v5
+
+      - name: GitHub Container Registry'ye giriş
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: İmajı build et
+        run: |
+          IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}
+          docker build \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            -t "$IMAGE:${GITHUB_SHA::7}" -t "$IMAGE:latest" ./app
+
+      - name: İmajı registry'ye gönder
+        run: |
+          IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}
+          docker push "$IMAGE:${GITHUB_SHA::7}"
+          docker push "$IMAGE:latest"
+
+      - name: Registry oturumunu kapat
+        if: always()
+        run: docker logout ghcr.io
