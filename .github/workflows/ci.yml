@@ -160,14 +160,53 @@ jobs:
                 --ignore-unfixed --no-progress --exit-code 0
           fi
 
+      - name: SBOM üret (CycloneDX)
+        run: |
+          mkdir -p "$RUNNER_TEMP/sbom"
+          docker run --rm -u "$(id -u):$(id -g)" \
+            -e TRIVY_CACHE_DIR=/cache \
+            -v "$HOME/.cache/trivy:/cache" \
+            -v "$RUNNER_TEMP:/scan:ro" \
+            -v "$RUNNER_TEMP/sbom:/out" \
+            "$TRIVY_IMAGE" \
+            image --input /scan/image.tar --format cyclonedx --no-progress \
+              --output "/out/sbom-${GITHUB_SHA::7}.cdx.json"
+
+      - name: SBOM doğrula
+        run: |
+          python3 - <<'PY'
+          import glob, json, os, sys
+          files = glob.glob(os.environ["RUNNER_TEMP"] + "/sbom/*.cdx.json")
+          if not files:
+              sys.exit("SBOM dosyası üretilmemiş")
+          d = json.load(open(files[0]))
+          comps = d.get("components", [])
+          libs = [c for c in comps if c.get("type") == "library"]
+          print("Format:", d.get("bomFormat"), d.get("specVersion"))
+          print("Toplam bileşen:", len(comps), "| kütüphane:", len(libs))
+          names = {c.get("name") for c in libs}
+          for need in ("fastapi", "starlette"):
+              if need not in names:
+                  sys.exit("SBOM'da beklenen paket yok: " + need)
+          print("SBOM doğrulandı")
+          PY
+
       - name: İmajı registry'ye gönder
         run: |
           IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}
           docker push "$IMAGE:${GITHUB_SHA::7}"
           docker push "$IMAGE:latest"
 
+      - name: SBOM'u arşivle
+        uses: actions/upload-artifact@v6
+        with:
+          name: sbom-${{ github.sha }}
+          path: ${{ runner.temp }}/sbom/
+          retention-days: 90
+          if-no-files-found: error
+
       - name: Geçici dosyaları ve oturumu temizle
         if: always()
         run: |
-          rm -f "$RUNNER_TEMP/image.tar"
+          rm -rf "$RUNNER_TEMP/image.tar" "$RUNNER_TEMP/sbom"
           docker logout ghcr.io

@@ -30,3 +30,7 @@ Düzeltilemeyen ya da yanlış pozitif olan bir bulgu kabul edilecekse:
 ## Araç sürümleri
 
 Araçlar sabit sürümle çalıştırılır (etiketler sonradan değiştirilebileceği için `latest` kullanılmaz). Trivy'nin 2026 Mart'ındaki tedarik zinciri olayı bu yüzden önemlidir: `trivy-action` kullanılmaz, Trivy doğrudan Docker imajından çalıştırılır. Sürüm yükseltmeleri PR ile yapılır.
+
+## SBOM
+
+Her `main` build'inde yayınlanan imaj için CycloneDX (JSON) formatında bir SBOM üretilir. SBOM, taranan imajın aynısından (`docker save` çıktısı) Trivy ile çıkarılır, geçerliliği ve beklenen paketlerin varlığı kontrol edilir, ardından commit koduyla adlandırılmış bir workflow artifact'ı olarak 90 gün saklanır. SBOM yalnızca envanterdir, açık bilgisi içermez. Açıklar tarama raporlarında izlenir.
