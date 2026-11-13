@@ -9,6 +9,15 @@ on:
 permissions:
   contents: read
 
+env:
+  # Araç sürümleri (sabit)
+  TRIVY_IMAGE: ghcr.io/aquasecurity/trivy:0.69.3
+  GITLEAKS_IMAGE: ghcr.io/gitleaks/gitleaks:v8.30.1
+  SEMGREP_IMAGE: semgrep/semgrep:1.170.0
+  # Eşikler (SECURITY-POLICY.md): bunları değiştirmek politikayı değiştirmektir
+  BLOCK_SEVERITY: HIGH,CRITICAL
+  REPORT_SEVERITY: MEDIUM
+
 jobs:
   lint-test:
     runs-on: [self-hosted, linux]
@@ -50,7 +59,7 @@ jobs:
         run: |
           docker run --rm -u "$(id -u):$(id -g)" \
             -v "$PWD:/repo" -w /repo \
-            ghcr.io/gitleaks/gitleaks:v8.30.1 \
+            "$GITLEAKS_IMAGE" \
             detect --source /repo --redact --verbose --no-banner
 
   sast:
@@ -65,7 +74,7 @@ jobs:
         run: |
           docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
             -v "$PWD:/src" -w /src \
-            semgrep/semgrep:1.170.0 \
+            "$SEMGREP_IMAGE" \
             semgrep scan --config p/default --config p/python \
               --severity ERROR --severity WARNING --metrics=off --error
 
@@ -77,16 +86,27 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Trivy (bağımlılıklar)
+      - name: Trivy bağımlılıklar (engelleyen)
         run: |
           mkdir -p "$HOME/.cache/trivy"
           docker run --rm -u "$(id -u):$(id -g)" \
             -e TRIVY_CACHE_DIR=/cache \
             -v "$HOME/.cache/trivy:/cache" \
             -v "$PWD:/src:ro" \
-            ghcr.io/aquasecurity/trivy:0.69.3 \
-            fs --scanners vuln --severity HIGH,CRITICAL \
+            "$TRIVY_IMAGE" \
+            fs --scanners vuln --severity "$BLOCK_SEVERITY" \
               --ignore-unfixed --no-progress --exit-code 1 /src
+
+      - name: Trivy bağımlılıklar (MEDIUM raporu, engellemez)
+        if: always()
+        run: |
+          docker run --rm -u "$(id -u):$(id -g)" \
+            -e TRIVY_CACHE_DIR=/cache \
+            -v "$HOME/.cache/trivy:/cache" \
+            -v "$PWD:/src:ro" \
+            "$TRIVY_IMAGE" \
+            fs --scanners vuln --severity "$REPORT_SEVERITY" \
+              --ignore-unfixed --no-progress --exit-code 0 /src
 
   build-push:
     needs: [lint-test, secret-scan, sast, dependency-scan]
@@ -114,7 +134,7 @@ jobs:
             --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
             -t "$IMAGE:${GITHUB_SHA::7}" -t "$IMAGE:latest" ./app
 
-      - name: İmajı Trivy ile tara
+      - name: İmajı Trivy ile tara (engelleyen)
         run: |
           IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}
           mkdir -p "$HOME/.cache/trivy"
@@ -123,9 +143,22 @@ jobs:
             -e TRIVY_CACHE_DIR=/cache \
             -v "$HOME/.cache/trivy:/cache" \
             -v "$RUNNER_TEMP:/scan:ro" \
-            ghcr.io/aquasecurity/trivy:0.69.3 \
-            image --input /scan/image.tar --severity HIGH,CRITICAL \
+            "$TRIVY_IMAGE" \
+            image --input /scan/image.tar --severity "$BLOCK_SEVERITY" \
               --ignore-unfixed --no-progress --exit-code 1
+
+      - name: İmaj MEDIUM raporu (engellemez)
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/image.tar" ]; then
+            docker run --rm -u "$(id -u):$(id -g)" \
+              -e TRIVY_CACHE_DIR=/cache \
+              -v "$HOME/.cache/trivy:/cache" \
+              -v "$RUNNER_TEMP:/scan:ro" \
+              "$TRIVY_IMAGE" \
+              image --input /scan/image.tar --severity "$REPORT_SEVERITY" \
+                --ignore-unfixed --no-progress --exit-code 0
+          fi
 
       - name: İmajı registry'ye gönder
         run: |
