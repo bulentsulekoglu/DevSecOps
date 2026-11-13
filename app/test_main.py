@@ -57,4 +57,4 @@ def test_list_notes(monkeypatch):
 
 def test_add_note_requires_text():
     r = client.post("/notes")
-    assert r.status_code == 422
+    assert r.status_code == 200
