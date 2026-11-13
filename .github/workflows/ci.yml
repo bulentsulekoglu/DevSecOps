@@ -110,7 +110,7 @@ jobs:
       - name: İmajı build et
         run: |
           IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}
-          docker build \
+          docker build --pull \
             --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
             -t "$IMAGE:${GITHUB_SHA::7}" -t "$IMAGE:latest" ./app
 
