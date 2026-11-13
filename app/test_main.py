@@ -42,9 +42,9 @@ def test_health(monkeypatch):
 
 def test_add_note(monkeypatch):
     monkeypatch.setattr(main, "get_conn", lambda: FakeConn(rows=[(1,)]))
-    r = client.post("/notes", params={"text": "yanlis"})
+    r = client.post("/notes", params={"text": "merhaba"})
     assert r.status_code == 200
-    assert r.json() == {"id": 1, "text": "yanlis"}
+    assert r.json() == {"id": 1, "text": "merhaba"}
 
 
 def test_list_notes(monkeypatch):
