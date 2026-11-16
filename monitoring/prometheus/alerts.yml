@@ -67,3 +67,59 @@ groups:
         annotations:
           summary: "{{ $labels.env }} uygulaması sunucu hatası (5xx) veriyor"
           description: "{{ $labels.env }} ortamında son 5 dakikada en az 3 adet 5xx yanıtı döndü."
+
+  - name: yedekleme
+    rules:
+      - alert: YedekBayat
+        expr: time() - backup_latest_timestamp_seconds > 129600
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.env }} için yeni yedek gelmiyor"
+          description: "{{ $labels.env }} en yeni yedeği {{ $value | humanizeDuration }} önce alınmış (sınır 36 saat). VM'deki cron ya da runner'ın çekme işi çalışmıyor olabilir."
+
+      - alert: YedekCekmeCalismiyor
+        expr: time() - backup_pull_last_run_timestamp_seconds > 129600
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.env }} yedek çekme işi çalışmıyor"
+          description: "Runner'ın yedek çekme işi {{ $value | humanizeDuration }}dir çalışmamış (runner'daki cron kontrol edilmeli)."
+
+      - alert: YedekCekmeBasarisiz
+        expr: backup_pull_success == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.env }} yedekleri çekilemedi"
+          description: "Runner {{ $labels.env }} VM'inden yedekleri çekemedi ya da bir yedeğin sha256 doğrulaması başarısız (~/backup-store/pull.log)."
+
+      - alert: YedekGeriYuklemeBasarisiz
+        expr: backup_verify_success == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.env }} yedeği geri yüklenemiyor"
+          description: "{{ $labels.env }} en yeni yedeğinin geçici veritabanında geri yükleme sınaması başarısız. Yedek kullanılamaz olabilir (~/backup-store/verify.log)."
+
+      - alert: YedekSinamasiCalismiyor
+        expr: time() - backup_verify_last_run_timestamp_seconds > 129600
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.env }} yedek sınaması çalışmıyor"
+          description: "Geri yükleme sınaması {{ $value | humanizeDuration }}dir çalışmamış (runner'daki cron kontrol edilmeli)."
+
+      - alert: YedekMetrikleriGelmiyor
+        expr: up{job="backup"} == 0 or absent(backup_latest_timestamp_seconds)
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Yedek metrikleri gelmiyor"
+          description: "Runner'daki yedek metrik dosyası ya da onu sunan konteyner yanıt vermiyor, yedek uyarıları kör kalmış olabilir."
