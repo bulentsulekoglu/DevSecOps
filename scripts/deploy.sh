@@ -20,6 +20,8 @@ ssh "${SSH_OPTS[@]}" "$HOST" 'test -f myapp/nginx/metrics-allow.conf' \
 echo ">> Yapılandırma dosyaları $HOST hedefine kopyalanıyor"
 scp "${SSH_OPTS[@]}" -q docker-compose.deploy.yml "$HOST:myapp/docker-compose.yml"
 scp "${SSH_OPTS[@]}" -q nginx/default.conf "$HOST:myapp/nginx/default.conf"
+ssh "${SSH_OPTS[@]}" "$HOST" 'mkdir -p myapp/scripts'
+scp "${SSH_OPTS[@]}" -q scripts/db-backup.sh scripts/db-restore.sh "$HOST:myapp/scripts/"
 
 echo ">> İmaj $HOST üzerinde çekiliyor: $IMAGE"
 printf '%s' "$GHCR_TOKEN" | ssh "${SSH_OPTS[@]}" "$HOST" \
