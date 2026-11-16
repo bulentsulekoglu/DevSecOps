@@ -210,3 +210,38 @@ jobs:
         run: |
           rm -rf "$RUNNER_TEMP/image.tar" "$RUNNER_TEMP/sbom"
           docker logout ghcr.io
+
+  deploy-staging:
+    needs: build-push
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, linux]
+    environment: staging
+    concurrency:
+      group: deploy-staging
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Kodu indir
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Staging'e dağıt
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_SHA::7}
+          bash scripts/deploy.sh staging "$IMAGE"
+
+      - name: Smoke test
+        run: |
+          HOST=$(ssh -G staging | awk '/^hostname /{print $2}')
+          bash scripts/smoke-test.sh "$HOST"
+
+      - name: Hata durumunda staging durumunu göster
+        if: failure()
+        run: |
+          ssh -o BatchMode=yes staging "cd myapp && docker compose ps && docker compose logs --tail 40" || true
