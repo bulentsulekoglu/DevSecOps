@@ -26,3 +26,12 @@ scrape_configs:
         target_label: instance
       - target_label: __address__
         replacement: blackbox:9115
+
+  # Uygulama metrikleri (HTTP istek sayısı, hata oranı, gecikme): nginx üzerinden /metrics
+  - job_name: app
+    scheme: https
+    metrics_path: /metrics
+    tls_config:
+      insecure_skip_verify: true  # self-signed sertifika
+    file_sd_configs:
+      - files: ['/etc/prometheus/targets/app.yml']
