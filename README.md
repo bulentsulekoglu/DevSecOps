@@ -44,3 +44,7 @@ Testler başarısız olursa build ve push çalışmaz.
 - Değişiklikler pull request ile `main`'e girer.
 - Merge için `lint-test` kontrolü yeşil olmalı ve branch `main` ile güncel olmalıdır.
 - PR'daki yorumlar çözülmeden merge edilemez.
+
+## Dağıtım akışı
+
+`main`'e merge sonrası: `build-push` imajı üretir ve digest'ini çıkarır, `deploy-staging` aynı digest'i staging'e otomatik dağıtır (health check ve smoke test ile) ve başarısız olursa otomatik geri alır. `deploy-production` aynı digest'i, GitHub `production` ortamındaki manuel onaydan sonra production'a dağıtır. Sürüm kayıtları hedef makinelerde `~/myapp/.release/` altında tutulur.
