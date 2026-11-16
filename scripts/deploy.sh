@@ -2,7 +2,6 @@
 set -euo pipefail
 
 # Kullanım: GHCR_USER=... GHCR_TOKEN=... scripts/deploy.sh <hedef> <imaj@digest> [commit]
-# Örnek:    scripts/deploy.sh staging ghcr.io/kullanici/repo@sha256:... abc1234
 HOST="${1:?hedef gerekli (ör. staging)}"
 IMAGE="${2:?imaj gerekli (ör. ghcr.io/kullanici/repo@sha256:...)}"
 SHA="${3:-bilinmiyor}"
@@ -37,17 +36,14 @@ if [ "$running" != "$IMAGE" ]; then
   exit 1
 fi
 
-echo ">> Sürüm kaydı güncelleniyor"
+echo ">> Aday sürüm kaydediliyor (smoke test geçince onaylanacak)"
 ssh "${SSH_OPTS[@]}" "$HOST" bash -s -- "$IMAGE" "$SHA" <<'REMOTE'
 set -euo pipefail
 IMAGE="$1"; SHA="$2"
-cd ~/myapp
-mkdir -p .release
-if [ -f .release/current ] && [ "$(cat .release/current)" != "$IMAGE" ]; then
-  cp .release/current .release/previous
-fi
-printf '%s' "$IMAGE" > .release/current
-printf '%s sha=%s image=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$SHA" "$IMAGE" >> .release/history.log
+mkdir -p ~/myapp/.release
+cd ~/myapp/.release
+printf '%s' "$IMAGE" > candidate
+printf '%s deployed sha=%s image=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$SHA" "$IMAGE" >> history.log
 REMOTE
 
-echo ">> Dağıtım tamam: $IMAGE"
+echo ">> Dağıtım tamam (onay bekliyor): $IMAGE"
