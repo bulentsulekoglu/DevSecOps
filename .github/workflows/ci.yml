@@ -133,6 +133,7 @@ jobs:
         run: |
           IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}
           docker build --pull \
+            --build-arg APP_VERSION="${GITHUB_SHA::7}" \
             --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
             -t "$IMAGE:${GITHUB_SHA::7}" -t "$IMAGE:latest" ./app
 
@@ -252,9 +253,11 @@ jobs:
           bash scripts/deploy.sh staging "$IMAGE" "${GITHUB_SHA::7}"
 
       - name: Smoke test
+        env:
+          IMAGE: ${{ needs.build-push.outputs.image }}
         run: |
           HOST=$(ssh -G staging | awk '/^hostname /{print $2}')
-          bash scripts/smoke-test.sh "$HOST"
+          EXPECTED_VERSION="${GITHUB_SHA::7}" EXPECTED_IMAGE="$IMAGE" bash scripts/smoke-test.sh "$HOST"
 
       - name: Sürümü onayla
         env:
@@ -304,9 +307,11 @@ jobs:
           bash scripts/deploy.sh production "$IMAGE" "${GITHUB_SHA::7}"
 
       - name: Smoke test
+        env:
+          IMAGE: ${{ needs.build-push.outputs.image }}
         run: |
           HOST=$(ssh -G production | awk '/^hostname /{print $2}')
-          bash scripts/smoke-test.sh "$HOST"
+          EXPECTED_VERSION="${GITHUB_SHA::7}" EXPECTED_IMAGE="$IMAGE" bash scripts/smoke-test.sh "$HOST"
 
       - name: Sürümü onayla
         env:

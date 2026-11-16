@@ -84,3 +84,12 @@ def test_server_errors_are_counted(monkeypatch):
     failing = TestClient(main.app, raise_server_exceptions=False)
     assert failing.get("/health").status_code == 500
     assert 'status="500"' in failing.get("/metrics").text
+
+
+def test_version_reports_build_info(monkeypatch):
+    monkeypatch.setenv("APP_VERSION", "abc1234")
+    monkeypatch.setenv("APP_IMAGE", "ghcr.io/ornek/uygulama@sha256:" + "0" * 64)
+    r = client.get("/version")
+    assert r.status_code == 200
+    assert r.json()["version"] == "abc1234"
+    assert r.json()["image"].startswith("ghcr.io/")
