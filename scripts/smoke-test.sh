@@ -12,6 +12,18 @@ body=$(curl -ksS --max-time 10 --retry 5 --retry-delay 3 --retry-connrefused "$B
   || fail "/health erişilemedi"
 [ "$body" = '{"status":"ok"}' ] || fail "/health beklenmeyen cevap: $body"
 
+echo "1b) /version"
+ver=$(curl -ksS --max-time 10 "$BASE/version") || fail "/version erişilemedi"
+echo "   $ver"
+if [ -n "${EXPECTED_VERSION:-}" ]; then
+  echo "$ver" | grep -F "\"version\":\"$EXPECTED_VERSION\"" >/dev/null \
+    || fail "/version beklenen sürümü göstermiyor (beklenen: $EXPECTED_VERSION)"
+fi
+if [ -n "${EXPECTED_IMAGE:-}" ]; then
+  echo "$ver" | grep -F "\"image\":\"$EXPECTED_IMAGE\"" >/dev/null \
+    || fail "/version beklenen imaj digest'ini göstermiyor (beklenen: $EXPECTED_IMAGE)"
+fi
+
 echo "2) HTTP -> HTTPS yönlendirmesi"
 code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "http://$HOST/")
 [ "$code" = "301" ] || fail "yönlendirme 301 olmalı, gelen: $code"

@@ -69,6 +69,14 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/version")
+def version():
+    return {
+        "version": os.environ.get("APP_VERSION", "dev"),
+        "image": os.environ.get("APP_IMAGE", "unknown"),
+    }
+
+
 @app.post("/notes")
 def add_note(text: str):
     with get_conn() as conn:
