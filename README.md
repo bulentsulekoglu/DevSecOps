@@ -15,6 +15,8 @@ FastAPI + PostgreSQL uygulaması. Docker Compose ile konteyner ortamında, nginx
         POSTGRES_USER=appuser
         POSTGRES_PASSWORD=guclu_bir_parola
         POSTGRES_DB=appdb
+        ADMIN_USERNAME=admin
+        ADMIN_PASSWORD=guclu_bir_admin_parolasi
 
 2. Self-signed TLS sertifikası üret:
 
@@ -56,3 +58,19 @@ Testler başarısız olursa build ve push çalışmaz.
 - **Sınama:** Runner VM'i 03:20'de her ortamın en yeni yedeğini geçici bir PostgreSQL konteynerinde geri yükler, yedeğin gerçekten kullanılabilir olduğunu doğrular.
 - **Geri yükleme:** VM üzerinde `bash myapp/scripts/db-restore.sh <yedek.sql.gz>`. Önce güvenlik yedeği alır, uygulamayı durdurup geri yükler ve sağlıklı olmasını bekler. Onay için `evet` yazılması gerekir.
 - **Sınırlar:** Yedekler şifrelenmemiştir (dosya izinleri `600`). Geri yükleme yalnızca veritabanı verisini geri alır, uygulama imajını ya da yapılandırma dosyalarını değil.
+
+## IT Asset Portal API
+
+| Uç nokta | Giriş | Açıklama |
+|---|---|---|
+| `GET /health` | hayır | Uygulama ve veritabanı sağlık kontrolü |
+| `GET /version` | hayır | Çalışan commit kodu ve imaj digest'i |
+| `POST /login` | hayır | `{"username","password"}` -> `access_token` (8 saat geçerli, dakikada 5 deneme) |
+| `POST /logout` | evet | Oturumu sonlandırır |
+| `GET /devices` | evet | Cihaz listesi (`limit`, `offset`) |
+| `POST /devices` | evet | Cihaz ekler (`name`, `asset_tag`, `device_type`, `owner`, `location`, `status`) |
+| `GET /devices/{id}` | evet | Tek cihaz |
+| `PUT /devices/{id}` | evet | Cihazı günceller |
+| `DELETE /devices/{id}` | evet | Cihazı siler |
+
+Giriş gerektiren uç noktalara `Authorization: Bearer <token>` başlığıyla erişilir. Etkileşimli arayüz: `/docs` (Swagger). İlk yönetici kullanıcı, ilk açılışta `.env` içindeki `ADMIN_USERNAME` ve `ADMIN_PASSWORD` ile oluşturulur; sonradan `.env`'i değiştirmek mevcut parolayı değiştirmez.

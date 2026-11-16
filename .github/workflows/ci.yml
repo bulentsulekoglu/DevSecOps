@@ -39,12 +39,8 @@ jobs:
             -v "$PWD/app:/app" -w /app python:3.12-slim \
             .venv/bin/ruff check --no-cache .
 
-      - name: Unit testler (pytest)
-        run: |
-          docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
-            -e PYTHONDONTWRITEBYTECODE=1 \
-            -v "$PWD/app:/app" -w /app python:3.12-slim \
-            .venv/bin/pytest -v -p no:cacheprovider
+      - name: Testler (geçici PostgreSQL ile)
+        run: bash scripts/run-tests.sh
 
   secret-scan:
     runs-on: [self-hosted, linux]
@@ -257,7 +253,7 @@ jobs:
           IMAGE: ${{ needs.build-push.outputs.image }}
         run: |
           HOST=$(ssh -G staging | awk '/^hostname /{print $2}')
-          EXPECTED_VERSION="${GITHUB_SHA::7}" EXPECTED_IMAGE="$IMAGE" bash scripts/smoke-test.sh "$HOST"
+          SMOKE_SSH_HOST=staging EXPECTED_VERSION="${GITHUB_SHA::7}" EXPECTED_IMAGE="$IMAGE" bash scripts/smoke-test.sh "$HOST"
 
       - name: Sürümü onayla
         env:
@@ -311,7 +307,7 @@ jobs:
           IMAGE: ${{ needs.build-push.outputs.image }}
         run: |
           HOST=$(ssh -G production | awk '/^hostname /{print $2}')
-          EXPECTED_VERSION="${GITHUB_SHA::7}" EXPECTED_IMAGE="$IMAGE" bash scripts/smoke-test.sh "$HOST"
+          SMOKE_SSH_HOST=production EXPECTED_VERSION="${GITHUB_SHA::7}" EXPECTED_IMAGE="$IMAGE" bash scripts/smoke-test.sh "$HOST"
 
       - name: Sürümü onayla
         env:

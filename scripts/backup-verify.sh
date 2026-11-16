@@ -50,11 +50,13 @@ verify_host() {
 
   zcat "$file" | docker exec -i "$CURRENT" psql -v ON_ERROR_STOP=1 -q -U postgres -d appdb >/dev/null \
     || { fail "$host: geri yükleme hata verdi ($(basename "$file"))"; return 1; }
-  count=$(docker exec "$CURRENT" psql -U postgres -d appdb -tAc "SELECT count(*) FROM notes") \
-    || { fail "$host: notes tablosu sorgulanamadı"; return 1; }
+  tables=$(docker exec "$CURRENT" psql -U postgres -d appdb -tAc "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'") \
+    || { fail "$host: tablolar sorgulanamadı"; return 1; }
+  [ "$tables" -ge 1 ] || { fail "$host: geri yüklenen veritabanında hiç tablo yok"; return 1; }
+  count="tablo sayısı: $tables"
 
   cleanup
-  log "[OK] $host: $(basename "$file") geri yüklendi (notes satır sayısı: $count, yaş: ${age_h} saat)"
+  log "[OK] $host: $(basename "$file") geri yüklendi ($count, yaş: ${age_h} saat)"
 }
 
 rc=0
