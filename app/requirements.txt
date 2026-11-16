@@ -2,3 +2,4 @@ fastapi==0.142.3
 uvicorn[standard]==0.34.0
 psycopg[binary]==3.2.13
 starlette==1.7.0
+prometheus-client==0.25.0

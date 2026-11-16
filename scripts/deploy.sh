@@ -14,6 +14,9 @@ SHA="${3:-bilinmiyor}"
 
 SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=yes)
 
+ssh "${SSH_OPTS[@]}" "$HOST" 'test -f myapp/nginx/metrics-allow.conf' \
+  || { echo "$HOST üzerinde myapp/nginx/metrics-allow.conf yok (bir kerelik kurulum eksik)" >&2; exit 1; }
+
 echo ">> Yapılandırma dosyaları $HOST hedefine kopyalanıyor"
 scp "${SSH_OPTS[@]}" -q docker-compose.deploy.yml "$HOST:myapp/docker-compose.yml"
 scp "${SSH_OPTS[@]}" -q nginx/default.conf "$HOST:myapp/nginx/default.conf"
