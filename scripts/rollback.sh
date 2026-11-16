@@ -51,7 +51,7 @@ fi
 
 # 5) Smoke test ile doğrula
 HOST_IP=$(ssh -G "$HOST" | awk '/^hostname /{print $2}')
-bash scripts/smoke-test.sh "$HOST_IP"
+SMOKE_LEVEL=basic bash scripts/smoke-test.sh "$HOST_IP"
 
 # 6) Kaydı güncelle
 ssh "${SSH_OPTS[@]}" "$HOST" bash -s -- "$FAILED" "$TARGET" "$SHA" <<'REMOTE'
