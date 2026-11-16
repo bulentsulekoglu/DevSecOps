@@ -110,6 +110,8 @@ jobs:
 
   build-push:
     needs: [lint-test, secret-scan, sast, dependency-scan]
+    outputs:
+      image: ${{ steps.digest.outputs.image }}
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: [self-hosted, linux]
     permissions:
@@ -197,6 +199,19 @@ jobs:
           docker push "$IMAGE:${GITHUB_SHA::7}"
           docker push "$IMAGE:latest"
 
+      - name: İmaj digest'ini al
+        id: digest
+        run: |
+          IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}
+          REF=$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$IMAGE:${GITHUB_SHA::7}" | grep "^$IMAGE@sha256:" | head -n1 || true)
+          if [ -z "$REF" ]; then
+            echo "Yayınlanan imajın digest'i bulunamadı" >&2
+            exit 1
+          fi
+          echo "Yayınlanan imaj: $REF"
+          echo "Yayınlanan imaj: $REF" >> "$GITHUB_STEP_SUMMARY"
+          echo "image=$REF" >> "$GITHUB_OUTPUT"
+
       - name: SBOM'u arşivle
         uses: actions/upload-artifact@v6
         with:
@@ -228,13 +243,13 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Staging'e dağıt
+      - name: Staging'e dağıt (digest ile)
         env:
           GHCR_USER: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ${{ needs.build-push.outputs.image }}
         run: |
-          IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_SHA::7}
-          bash scripts/deploy.sh staging "$IMAGE"
+          bash scripts/deploy.sh staging "$IMAGE" "${GITHUB_SHA::7}"
 
       - name: Smoke test
         run: |
