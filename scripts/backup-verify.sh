@@ -58,7 +58,17 @@ verify_host() {
 }
 
 rc=0
+STATE="$STORE/state"
+mkdir -p "$STATE"
 for host in staging production; do
-  verify_host "$host" || rc=1
+  now=$(date +%s)
+  if verify_host "$host"; then
+    echo "$now 1" > "$STATE/verify-$host.last"
+    echo "$now" > "$STATE/verify-$host.ok"
+  else
+    echo "$now 0" > "$STATE/verify-$host.last"
+    rc=1
+  fi
 done
+bash "$(dirname "$0")/backup-metrics.sh" || log "[UYARI] metrikler yazılamadı"
 exit "$rc"

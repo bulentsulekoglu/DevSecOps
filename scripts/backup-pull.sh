@@ -9,12 +9,16 @@ log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*"; }
 
 umask 077
 rc=0
+STATE="$DEST/state"
+mkdir -p "$STATE"
 for host in staging production; do
   mkdir -p "$DEST/$host"
+  now=$(date +%s)
   if ! rsync -a --ignore-existing -e "ssh -o BatchMode=yes -o StrictHostKeyChecking=yes" \
        --include='appdb-*.sql.gz' --include='appdb-*.sql.gz.sha256' --exclude='*' \
        "$host:backups/" "$DEST/$host/"; then
     log "[HATA] $host: yedekler çekilemedi"
+    echo "$now 0" > "$STATE/pull-$host.last"
     rc=1
     continue
   fi
@@ -26,10 +30,17 @@ for host in staging production; do
       || { log "[HATA] $host: $(basename "$s") doğrulanamadı"; bad=1; }
   done
   shopt -u nullglob
-  [ "$bad" = 0 ] || rc=1
+  if [ "$bad" = 0 ]; then
+    echo "$now 1" > "$STATE/pull-$host.last"
+    echo "$now" > "$STATE/pull-$host.ok"
+  else
+    echo "$now 0" > "$STATE/pull-$host.last"
+    rc=1
+  fi
 
   n=$(find "$DEST/$host" -maxdepth 1 -name 'appdb-*.sql.gz' | wc -l)
   log "[OK] $host: yedekler çekildi (toplam $n dosya)"
   find "$DEST/$host" -maxdepth 1 -name 'appdb-*' -mtime +"$RETENTION_DAYS" -delete
 done
+bash "$(dirname "$0")/backup-metrics.sh" || log "[UYARI] metrikler yazılamadı"
 exit "$rc"
