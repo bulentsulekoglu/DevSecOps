@@ -1,0 +1,69 @@
+groups:
+  - name: erisilebilirlik
+    rules:
+      - alert: ServisErisilemiyor
+        expr: probe_success{job="blackbox-http"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.env }} servisi erişilemiyor"
+          description: "{{ $labels.env }} ortamında /health kontrolü 1 dakikadır başarısız."
+
+      - alert: SunucuMetrikleriGelmiyor
+        expr: up{job="node"} == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.env }} sunucusundan metrik gelmiyor"
+          description: "{{ $labels.env }} üzerindeki node_exporter 2 dakikadır yanıt vermiyor (sunucu kapalı ya da ağ sorunu olabilir)."
+
+      - alert: UygulamaMetrikleriGelmiyor
+        expr: up{job="app"} == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.env }} uygulamasından metrik gelmiyor"
+          description: "{{ $labels.env }} ortamında uygulamanın /metrics adresi 2 dakikadır yanıt vermiyor."
+
+  - name: kaynaklar
+    rules:
+      - alert: YuksekCPU
+        expr: 100 - (avg by (env) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.env }} CPU kullanımı yüksek"
+          description: "{{ $labels.env }} CPU kullanımı 10 dakikadır %85 üzerinde (şu an %{{ printf \"%.0f\" $value }})."
+
+      - alert: YuksekRAM
+        expr: (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 > 90
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.env }} RAM kullanımı yüksek"
+          description: "{{ $labels.env }} RAM kullanımı 10 dakikadır %90 üzerinde (şu an %{{ printf \"%.0f\" $value }})."
+
+      - alert: DiskDoluyor
+        expr: (1 - node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay|squashfs"} / node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|overlay|squashfs"}) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.env }} diski doluyor"
+          description: "{{ $labels.env }} kök disk kullanımı %85 üzerinde (şu an %{{ printf \"%.0f\" $value }})."
+
+  - name: http
+    rules:
+      - alert: SunucuHatalari5xx
+        expr: sum by (env) (increase(http_requests_total{job="app",status=~"5.."}[5m])) >= 3
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.env }} uygulaması sunucu hatası (5xx) veriyor"
+          description: "{{ $labels.env }} ortamında son 5 dakikada en az 3 adet 5xx yanıtı döndü."

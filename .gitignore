@@ -5,3 +5,6 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 monitoring/targets/
+monitoring/secrets/
+monitoring/alertmanager/generated/
+monitoring/alertmanager/data/

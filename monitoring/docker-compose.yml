@@ -9,9 +9,26 @@ services:
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./targets:/etc/prometheus/targets:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
       - prometheus-data:/prometheus
     ports:
       - "127.0.0.1:9090:9090"
+    networks: [monitoring]
+
+  alertmanager:
+    image: prom/alertmanager:v0.33.1
+    restart: unless-stopped
+    # Şifre dosyasını yalnızca bu kullanıcı okuyabildiği için root olmayan kendi kimliğinle çalışır
+    user: "${ALERTMANAGER_USER:?önce monitoring/setup-alerting.sh çalıştırılmalı}"
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    volumes:
+      - ./alertmanager/generated/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ./secrets:/etc/alertmanager/secrets:ro
+      - ./alertmanager/data:/alertmanager
+    ports:
+      - "127.0.0.1:9093:9093"
     networks: [monitoring]
 
   blackbox:
