@@ -2,6 +2,8 @@
 
 FastAPI + PostgreSQL uygulaması. Docker Compose ile konteyner ortamında, nginx (TLS) arkasında çalışır. Tüm servisler root olmayan kullanıcıyla çalışır.
 
+**Kurulum ve uyarlama kılavuzu:** [docs/KURULUM.md](docs/KURULUM.md)
+
 ## Mimari
 
 - nginx (TLS, 80/443) -> FastAPI uygulaması -> PostgreSQL
