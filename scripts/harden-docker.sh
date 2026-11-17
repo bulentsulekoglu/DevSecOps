@@ -66,6 +66,7 @@ cfg.update({
     "live-restore": True,
     "userland-proxy": False,
     "no-new-privileges": True,
+    "log-level": "info",
     "log-driver": "json-file",
     "log-opts": {"max-size": "10m", "max-file": "3"},
 })
