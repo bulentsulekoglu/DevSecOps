@@ -57,6 +57,15 @@ groups:
           summary: "{{ $labels.env }} diski doluyor"
           description: "{{ $labels.env }} kök disk kullanımı %85 üzerinde (şu an %{{ printf \"%.0f\" $value }})."
 
+      - alert: DiskDolacak
+        expr: predict_linear(node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay|squashfs"}[1h], 4 * 3600) < 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.env }} diski 4 saat içinde dolacak"
+          description: "{{ $labels.env }} kök diski son 1 saatlik gidişatla 4 saat içinde dolacak."
+
   - name: http
     rules:
       - alert: SunucuHatalari5xx
