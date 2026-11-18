@@ -131,7 +131,7 @@ jobs:
           docker build --pull \
             --build-arg APP_VERSION="${GITHUB_SHA::7}" \
             --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
-            -t "$IMAGE:${GITHUB_SHA::7}" -t "$IMAGE:latest" ./app
+            -t "$IMAGE:${GITHUB_SHA::7}" ./app
 
       - name: İmajı Trivy ile tara (engelleyen)
         run: |
@@ -194,7 +194,6 @@ jobs:
         run: |
           IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}
           docker push "$IMAGE:${GITHUB_SHA::7}"
-          docker push "$IMAGE:latest"
 
       - name: İmaj digest'ini al
         id: digest
