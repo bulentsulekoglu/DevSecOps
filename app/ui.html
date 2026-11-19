@@ -28,6 +28,13 @@
     </section>
 
     <section id="app-view" hidden>
+      <div class="stats">
+        <div class="stat"><span class="num" id="s-total">0</span><span class="label">Toplam cihaz</span></div>
+        <div class="stat active"><span class="num" id="s-active">0</span><span class="label">Kullanımda</span></div>
+        <div class="stat in_repair"><span class="num" id="s-in_repair">0</span><span class="label">Tamirde</span></div>
+        <div class="stat retired"><span class="num" id="s-retired">0</span><span class="label">Emekli</span></div>
+      </div>
+
       <div class="toolbar">
         <h2>Cihazlar <span id="count"></span></h2>
         <button id="new-btn" type="button">Yeni cihaz</button>
@@ -54,19 +61,43 @@
         <p id="form-error" class="error" role="alert"></p>
       </form>
 
+      <div class="filters">
+        <input id="search" type="search" placeholder="Ara: ad, sahibi, etiket, konum" aria-label="Ara">
+        <select id="filter-status" aria-label="Duruma göre filtrele">
+          <option value="">Tüm durumlar</option>
+          <option value="active">Kullanımda</option>
+          <option value="in_repair">Tamirde</option>
+          <option value="retired">Emekli</option>
+        </select>
+        <select id="filter-type" aria-label="Türe göre filtrele">
+          <option value="">Tüm türler</option>
+        </select>
+        <div class="view-toggle">
+          <button id="view-list" type="button" class="secondary active">Liste</button>
+          <button id="view-owner" type="button" class="secondary">Kimde ne var</button>
+        </div>
+      </div>
+
       <p id="list-error" class="error" role="alert"></p>
-      <p id="empty" hidden>Henüz cihaz yok.</p>
-      <div class="table-wrap">
+      <p id="empty" hidden></p>
+
+      <div id="list-view" class="table-wrap">
         <table>
           <thead>
             <tr>
-              <th>Ad</th><th>Demirbaş etiketi</th><th>Tür</th>
-              <th>Sahibi</th><th>Konum</th><th>Durum</th><th>İşlem</th>
+              <th><button type="button" class="th-btn" data-sort="name">Ad</button></th>
+              <th><button type="button" class="th-btn" data-sort="asset_tag">Demirbaş etiketi</button></th>
+              <th><button type="button" class="th-btn" data-sort="device_type">Tür</button></th>
+              <th><button type="button" class="th-btn" data-sort="owner">Sahibi</button></th>
+              <th><button type="button" class="th-btn" data-sort="location">Konum</button></th>
+              <th><button type="button" class="th-btn" data-sort="status">Durum</button></th>
+              <th>İşlem</th>
             </tr>
           </thead>
           <tbody id="rows"></tbody>
         </table>
       </div>
+      <div id="owner-view" class="owner-grid" hidden></div>
     </section>
   </main>
 

@@ -183,3 +183,10 @@ def test_ui_dosyalari_sunuluyor(client):
         r = client.get(path)
         assert r.status_code == 200
         assert kind in r.headers["content-type"]
+
+
+def test_ana_adres_arayuzu_sunar(client):
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "IT Asset Portal" in r.text
+    assert r.text == client.get("/ui").text
