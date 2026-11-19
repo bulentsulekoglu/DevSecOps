@@ -150,3 +150,65 @@ button.active { background: var(--accent); color: #fff; border-color: var(--acce
 .owner-card li { display: flex; justify-content: space-between; gap: 8px; align-items: center; border-top: 1px solid var(--line); padding-top: 8px; }
 .owner-card .meta { color: var(--muted); font-size: 13px; }
 .owner-card .item-name { display: block; }
+
+/* --- Aşama 1: tema anahtarı, toplu işlem, bildirim, onay penceresi, yazdırma --- */
+:root[data-theme="dark"] {
+  --bg: #14181f; --card: #1c222b; --text: #e6e9ee; --muted: #9aa5b4;
+  --line: #2f3844; --accent: #6ea2f0; --danger: #f2837c; --ok: #6fcf97; --warn: #f0b45a;
+}
+
+:root[data-theme="light"] {
+  --bg: #f6f7f9; --card: #ffffff; --text: #1c2430; --muted: #5b6675;
+  --line: #d9dde3; --accent: #1f5fbf; --danger: #b3261e; --ok: #1b7a3a; --warn: #a15c00;
+}
+
+.header-actions { display: flex; gap: 8px; }
+.stat[data-filter] { cursor: pointer; }
+.stat[data-filter]:hover { border-color: var(--accent); }
+
+.bulk-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  background: var(--card);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+
+th.sel, td.sel { width: 32px; }
+
+dialog {
+  background: var(--card);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 16px;
+  max-width: 420px;
+}
+
+dialog::backdrop { background: rgba(0, 0, 0, 0.5); }
+dialog p { margin-top: 0; }
+
+.toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--text);
+  color: var(--bg);
+  padding: 10px 18px;
+  border-radius: 8px;
+  z-index: 10;
+}
+
+.toast.error { background: var(--danger); color: #fff; }
+
+@media print {
+  body { background: #fff; color: #000; }
+  header, footer, .filters, .toolbar .buttons, #device-form, .bulk-bar, .toast { display: none !important; }
+  #list-view th:last-child, #list-view td:last-child, .sel { display: none; }
+  .table-wrap, .stat, .owner-card { border-color: #999; }
+}
