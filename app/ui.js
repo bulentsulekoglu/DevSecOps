@@ -566,7 +566,8 @@ async function loadVersion() {
   try {
     const res = await fetch("/version");
     const data = await res.json();
-    $("version").textContent = data.version || "-";
+    const release = data.release && data.release !== "dev" ? data.release + " " : "";
+    $("version").textContent = release ? release + "(" + (data.version || "-") + ")" : (data.version || "-");
   } catch (e) { /* sürüm bilgisi alınamadı, sayfa yine çalışır */ }
 }
 
