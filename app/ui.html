@@ -36,6 +36,7 @@
         <div class="stat active" data-filter="active"><span class="num" id="s-active">0</span><span class="label">Kullanımda</span></div>
         <div class="stat in_repair" data-filter="in_repair"><span class="num" id="s-in_repair">0</span><span class="label">Tamirde</span></div>
         <div class="stat retired" data-filter="retired"><span class="num" id="s-retired">0</span><span class="label">Emekli</span></div>
+        <div class="stat warranty" data-warranty="soon"><span class="num" id="s-warranty">0</span><span class="label">Garanti 30 gün içinde bitiyor</span></div>
       </div>
 
       <div class="toolbar">
@@ -54,6 +55,10 @@
         <label>Tür <input id="f-type" maxlength="50" required placeholder="laptop, telefon, yazıcı"></label>
         <label>Sahibi <input id="f-owner" maxlength="100"></label>
         <label>Konum <input id="f-location" maxlength="100"></label>
+        <label>Seri numarası <input id="f-serial" maxlength="100"></label>
+        <label>Satın alma tarihi <input id="f-purchase" type="date"></label>
+        <label>Garanti bitişi <input id="f-warranty" type="date"></label>
+        <label>Not <textarea id="f-notes" maxlength="1000" rows="3"></textarea></label>
         <label>Durum
           <select id="f-status">
             <option value="active">Kullanımda</option>
@@ -110,9 +115,11 @@
               <th class="sel"><input type="checkbox" id="select-all" aria-label="Hepsini seç"></th>
               <th><button type="button" class="th-btn" data-sort="name">Ad</button></th>
               <th><button type="button" class="th-btn" data-sort="asset_tag">Demirbaş etiketi</button></th>
+              <th><button type="button" class="th-btn" data-sort="serial_number">Seri no</button></th>
               <th><button type="button" class="th-btn" data-sort="device_type">Tür</button></th>
               <th><button type="button" class="th-btn" data-sort="owner">Sahibi</button></th>
               <th><button type="button" class="th-btn" data-sort="location">Konum</button></th>
+              <th><button type="button" class="th-btn" data-sort="warranty_until">Garanti bitişi</button></th>
               <th><button type="button" class="th-btn" data-sort="status">Durum</button></th>
               <th>İşlem</th>
             </tr>

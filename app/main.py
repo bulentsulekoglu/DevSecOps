@@ -4,13 +4,14 @@ import os
 import secrets
 import time
 from contextlib import asynccontextmanager
+from datetime import date
 from typing import Literal
 
 import psycopg
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 DB_URL = (
     f"postgresql://{os.environ['POSTGRES_USER']}:{os.environ['POSTGRES_PASSWORD']}"
@@ -50,6 +51,12 @@ SCHEMA = [
         status TEXT NOT NULL DEFAULT 'active',
         created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now())""",
+    "ALTER TABLE devices ADD COLUMN IF NOT EXISTS serial_number TEXT",
+    "ALTER TABLE devices ADD COLUMN IF NOT EXISTS notes TEXT",
+    "ALTER TABLE devices ADD COLUMN IF NOT EXISTS purchase_date DATE",
+    "ALTER TABLE devices ADD COLUMN IF NOT EXISTS warranty_until DATE",
+    "CREATE UNIQUE INDEX IF NOT EXISTS devices_serial_uidx "
+    "ON devices (serial_number) WHERE serial_number IS NOT NULL",
 ]
 
 
@@ -242,6 +249,28 @@ class DeviceIn(BaseModel):
     owner: str | None = Field(default=None, max_length=100)
     location: str | None = Field(default=None, max_length=100)
     status: Literal["active", "in_repair", "retired"] = "active"
+    serial_number: str | None = Field(default=None, max_length=100)
+    notes: str | None = Field(default=None, max_length=1000)
+    purchase_date: date | None = None
+    warranty_until: date | None = None
+
+    @field_validator("serial_number", "notes", mode="before")
+    @classmethod
+    def blank_to_none(cls, value):
+        if isinstance(value, str):
+            value = value.strip()
+            return value or None
+        return value
+
+    @model_validator(mode="after")
+    def check_dates(self):
+        if (
+            self.purchase_date
+            and self.warranty_until
+            and self.warranty_until < self.purchase_date
+        ):
+            raise ValueError("Garanti bitişi satın alma tarihinden önce olamaz")
+        return self
 
 
 def device_dict(r) -> dict:
@@ -255,7 +284,17 @@ def device_dict(r) -> dict:
         "status": r[6],
         "created_at": r[7],
         "updated_at": r[8],
+        "serial_number": r[9],
+        "notes": r[10],
+        "purchase_date": r[11],
+        "warranty_until": r[12],
     }
+
+
+def unique_message(exc: psycopg.errors.UniqueViolation) -> str:
+    if exc.diag.constraint_name == "devices_serial_uidx":
+        return "Bu seri numarası zaten kayıtlı"
+    return "Bu envanter etiketi zaten kayıtlı"
 
 
 @app.get("/devices")
@@ -267,7 +306,8 @@ def list_devices(
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT id, name, asset_tag, device_type, owner, location, status, "
-            "created_at, updated_at FROM devices ORDER BY id LIMIT %s OFFSET %s",
+            "created_at, updated_at, serial_number, notes, purchase_date, "
+            "warranty_until FROM devices ORDER BY id LIMIT %s OFFSET %s",
             (limit, offset),
         ).fetchall()
     return [device_dict(r) for r in rows]
@@ -278,10 +318,12 @@ def create_device(device: DeviceIn, user: dict = Depends(current_user)):
     try:
         with get_conn() as conn:
             row = conn.execute(
-                "INSERT INTO devices (name, asset_tag, device_type, owner, location, status) "
-                "VALUES (%s, %s, %s, %s, %s, %s) "
+                "INSERT INTO devices (name, asset_tag, device_type, owner, location, "
+                "status, serial_number, notes, purchase_date, warranty_until) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
                 "RETURNING id, name, asset_tag, device_type, owner, location, status, "
-                "created_at, updated_at",
+                "created_at, updated_at, serial_number, notes, purchase_date, "
+                "warranty_until",
                 (
                     device.name,
                     device.asset_tag,
@@ -289,12 +331,14 @@ def create_device(device: DeviceIn, user: dict = Depends(current_user)):
                     device.owner,
                     device.location,
                     device.status,
+                    device.serial_number,
+                    device.notes,
+                    device.purchase_date,
+                    device.warranty_until,
                 ),
             ).fetchone()
-    except psycopg.errors.UniqueViolation:
-        raise HTTPException(
-            status_code=409, detail="Bu envanter etiketi zaten kayıtlı"
-        ) from None
+    except psycopg.errors.UniqueViolation as exc:
+        raise HTTPException(status_code=409, detail=unique_message(exc)) from None
     return device_dict(row)
 
 
@@ -303,7 +347,8 @@ def get_device(device_id: int, user: dict = Depends(current_user)):
     with get_conn() as conn:
         row = conn.execute(
             "SELECT id, name, asset_tag, device_type, owner, location, status, "
-            "created_at, updated_at FROM devices WHERE id = %s",
+            "created_at, updated_at, serial_number, notes, purchase_date, "
+            "warranty_until FROM devices WHERE id = %s",
             (device_id,),
         ).fetchone()
     if row is None:
@@ -319,10 +364,13 @@ def update_device(
         with get_conn() as conn:
             row = conn.execute(
                 "UPDATE devices SET name = %s, asset_tag = %s, device_type = %s, "
-                "owner = %s, location = %s, status = %s, updated_at = now() "
+                "owner = %s, location = %s, status = %s, serial_number = %s, "
+                "notes = %s, purchase_date = %s, warranty_until = %s, "
+                "updated_at = now() "
                 "WHERE id = %s "
                 "RETURNING id, name, asset_tag, device_type, owner, location, status, "
-                "created_at, updated_at",
+                "created_at, updated_at, serial_number, notes, purchase_date, "
+                "warranty_until",
                 (
                     device.name,
                     device.asset_tag,
@@ -330,13 +378,15 @@ def update_device(
                     device.owner,
                     device.location,
                     device.status,
+                    device.serial_number,
+                    device.notes,
+                    device.purchase_date,
+                    device.warranty_until,
                     device_id,
                 ),
             ).fetchone()
-    except psycopg.errors.UniqueViolation:
-        raise HTTPException(
-            status_code=409, detail="Bu envanter etiketi zaten kayıtlı"
-        ) from None
+    except psycopg.errors.UniqueViolation as exc:
+        raise HTTPException(status_code=409, detail=unique_message(exc)) from None
     if row is None:
         raise HTTPException(status_code=404, detail="Cihaz bulunamadı")
     return device_dict(row)

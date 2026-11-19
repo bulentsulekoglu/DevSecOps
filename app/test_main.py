@@ -190,3 +190,85 @@ def test_ana_adres_arayuzu_sunar(client):
     assert r.status_code == 200
     assert "IT Asset Portal" in r.text
     assert r.text == client.get("/ui").text
+
+
+def test_yeni_alanlar_kaydedilir_ve_okunur(client, auth):
+    body = {
+        "name": "Dizüstü X",
+        "asset_tag": "LT-9001",
+        "device_type": "laptop",
+        "serial_number": "SN-123",
+        "notes": "Yeni alındı",
+        "purchase_date": "2026-01-15",
+        "warranty_until": "2029-01-15",
+    }
+    r = client.post("/devices", json=body, headers=auth)
+    assert r.status_code == 201
+    created = r.json()
+    assert created["serial_number"] == "SN-123"
+    assert created["notes"] == "Yeni alındı"
+    assert created["purchase_date"] == "2026-01-15"
+    assert created["warranty_until"] == "2029-01-15"
+    got = client.get(f"/devices/{created['id']}", headers=auth).json()
+    assert got["serial_number"] == "SN-123"
+    assert got["warranty_until"] == "2029-01-15"
+
+
+def test_yeni_alanlar_istege_baglidir(client, auth):
+    r = client.post(
+        "/devices",
+        json={"name": "A", "asset_tag": "LT-9002", "device_type": "laptop"},
+        headers=auth,
+    )
+    assert r.status_code == 201
+    assert r.json()["serial_number"] is None
+    assert r.json()["warranty_until"] is None
+
+
+def test_ayni_seri_numarasi_409(client, auth):
+    base = {"name": "A", "device_type": "laptop", "serial_number": "SN-DUP"}
+    first = client.post("/devices", json={**base, "asset_tag": "LT-9003"}, headers=auth)
+    assert first.status_code == 201
+    second = client.post("/devices", json={**base, "asset_tag": "LT-9004"}, headers=auth)
+    assert second.status_code == 409
+    assert "seri numarası" in second.json()["detail"]
+
+
+def test_ayni_etiket_hala_etiket_mesaji_verir(client, auth):
+    body = {"name": "A", "asset_tag": "LT-9007", "device_type": "laptop"}
+    assert client.post("/devices", json=body, headers=auth).status_code == 201
+    r = client.post("/devices", json=body, headers=auth)
+    assert r.status_code == 409
+    assert "etiketi" in r.json()["detail"]
+
+
+def test_bos_seri_numarasi_bos_sayilir(client, auth):
+    for tag in ("LT-9005", "LT-9006"):
+        body = {"name": "A", "asset_tag": tag, "device_type": "laptop", "serial_number": "  "}
+        r = client.post("/devices", json=body, headers=auth)
+        assert r.status_code == 201
+        assert r.json()["serial_number"] is None
+
+
+def test_garanti_satin_almadan_once_olamaz(client, auth):
+    body = {
+        "name": "A",
+        "asset_tag": "LT-9008",
+        "device_type": "laptop",
+        "purchase_date": "2026-05-01",
+        "warranty_until": "2026-01-01",
+    }
+    assert client.post("/devices", json=body, headers=auth).status_code == 422
+
+
+def test_guncelleme_yeni_alanlari_degistirir(client, auth):
+    body = {"name": "A", "asset_tag": "LT-9009", "device_type": "laptop"}
+    device_id = client.post("/devices", json=body, headers=auth).json()["id"]
+    r = client.put(
+        f"/devices/{device_id}",
+        json={**body, "serial_number": "SN-NEW", "notes": "güncellendi"},
+        headers=auth,
+    )
+    assert r.status_code == 200
+    assert r.json()["serial_number"] == "SN-NEW"
+    assert r.json()["notes"] == "güncellendi"

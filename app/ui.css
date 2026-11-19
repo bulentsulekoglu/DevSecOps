@@ -212,3 +212,19 @@ dialog p { margin-top: 0; }
   #list-view th:last-child, #list-view td:last-child, .sel { display: none; }
   .table-wrap, .stat, .owner-card { border-color: #999; }
 }
+
+/* --- Yeni alanlar: garanti uyarıları, not kutusu --- */
+textarea {
+  font: inherit;
+  padding: 8px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.stat[data-warranty] { cursor: pointer; }
+.stat[data-warranty]:hover { border-color: var(--accent); }
+.stat.warranty .num { color: var(--warn); }
+.cell-soon { color: var(--warn); font-weight: 600; }
+.cell-expired { color: var(--danger); font-weight: 600; }
