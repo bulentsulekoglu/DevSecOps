@@ -168,3 +168,18 @@ def test_server_errors_are_counted(monkeypatch):
     failing = TestClient(main.app, raise_server_exceptions=False)
     assert failing.get("/health").status_code == 500
     assert 'status="500"' in failing.get("/metrics").text
+
+
+def test_ui_sayfasi_giris_istemez_ve_basliklari_dogru(client):
+    r = client.get("/ui")
+    assert r.status_code == 200
+    assert "text/html" in r.headers["content-type"]
+    assert "script-src 'self'" in r.headers["content-security-policy"]
+    assert r.headers["x-content-type-options"] == "nosniff"
+
+
+def test_ui_dosyalari_sunuluyor(client):
+    for path, kind in (("/ui/app.css", "text/css"), ("/ui/app.js", "text/javascript")):
+        r = client.get(path)
+        assert r.status_code == 200
+        assert kind in r.headers["content-type"]
