@@ -235,3 +235,17 @@ textarea {
 .history-list li { border-top: 1px solid var(--line); padding-top: 8px; }
 .history-list .meta { color: var(--muted); font-size: 13px; }
 .history-list .change { font-size: 14px; }
+
+/* --- Roller ve kullanıcı yönetimi --- */
+#who { color: var(--muted); font-size: 14px; margin-right: 8px; }
+#users-dialog { width: 94vw; max-width: 760px; }
+#pw-dialog, #reset-dialog { width: 90vw; max-width: 380px; }
+dialog label { display: grid; gap: 4px; margin-bottom: 10px; }
+dialog input:not([type="checkbox"]), dialog select { width: 100%; box-sizing: border-box; }
+.users-table { width: 100%; border-collapse: collapse; margin-bottom: 12px; }
+.users-table th, .users-table td { text-align: left; padding: 6px 4px; border-top: 1px solid var(--line); }
+.users-table select { width: auto; }
+.user-add { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; align-items: end; margin-bottom: 12px; }
+body[data-role="viewer"] .write-only,
+body[data-role="viewer"] .sel,
+body[data-role="viewer"] #new-btn { display: none !important; }

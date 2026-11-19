@@ -12,6 +12,8 @@ let allDevices = [];
 let visibleDevices = [];
 let pendingType = "";
 let toastTimer = null;
+let me = null;
+let resetTarget = null;
 const selected = new Set();
 const view = { mode: "list", sortKey: "id", sortDir: 1, warrantySoon: false };
 
@@ -68,6 +70,9 @@ async function api(path, options = {}) {
     try {
       const data = await res.json();
       if (typeof data.detail === "string") msg = data.detail;
+      else if (Array.isArray(data.detail) && data.detail[0] && data.detail[0].msg) {
+        msg = String(data.detail[0].msg).replace(/^Value error, /, "");
+      }
     } catch (e) { /* yanıt gövdesi yok */ }
     throw new Error(msg);
   }
@@ -83,6 +88,8 @@ function show(loggedIn) {
 function signOut() {
   token = null;
   saveToken(null);
+  applyRole(null);
+  for (const d of document.querySelectorAll("dialog")) if (d.open) d.close();
   allDevices = [];
   selected.clear();
   render();
@@ -252,9 +259,9 @@ function renderRows(devices) {
     const actions = document.createElement("td");
     actions.className = "actions";
     actions.append(
-      button("Düzenle", "secondary", () => openForm(d)),
+      button("Düzenle", "secondary write-only", () => openForm(d)),
       button("Geçmiş", "secondary", () => openDeviceHistory(d)),
-      button("Sil", "danger", () => removeDevice(d)),
+      button("Sil", "danger write-only", () => removeDevice(d)),
     );
     tr.append(statusCell, actions);
     rows.append(tr);
@@ -580,6 +587,7 @@ $("login-form").addEventListener("submit", async (event) => {
     saveToken(token);
     $("password").value = "";
     show(true);
+    await loadMe();
     await loadDevices();
   } catch (e) {
     $("login-error").textContent = e.message;
@@ -678,8 +686,194 @@ $("device-form").addEventListener("submit", async (event) => {
 $("history-btn").addEventListener("click", openRecentHistory);
 $("history-close").addEventListener("click", () => $("history-dialog").close());
 
+// --- Roller, kullanıcı yönetimi, parola değiştirme ---
+
+const ROLES = { admin: "Yönetici", editor: "Düzenleyici", viewer: "Okuyucu" };
+const USER_EVENTS = {
+  create: "kullanıcıyı oluşturdu",
+  role: "rolünü değiştirdi",
+  activate: "hesabı etkinleştirdi",
+  deactivate: "hesabı pasifleştirdi",
+  password_reset: "parolasını sıfırladı",
+  password_change: "kendi parolasını değiştirdi",
+};
+
+// Sayfadaki gizleme yalnızca kolaylıktır; asıl yetki denetimi sunucudadır.
+function applyRole(info) {
+  me = info;
+  document.body.dataset.role = info ? info.role : "";
+  $("who").textContent = info ? info.username + " (" + (ROLES[info.role] || info.role) + ")" : "";
+  $("who").hidden = !info;
+  $("pw-btn").hidden = !info;
+  $("users-btn").hidden = !info || info.role !== "admin";
+}
+
+async function loadMe() {
+  try { applyRole(await api("/me")); } catch (e) { /* oturum yoksa signOut zaten çalıştı */ }
+}
+
+function translateRoles(text) {
+  return String(text).replace(/admin|editor|viewer/g, (r) => ROLES[r]);
+}
+
+function userRow(u) {
+  const tr = document.createElement("tr");
+  const self = me && u.username === me.username;
+  const roleTd = document.createElement("td");
+  const sel = document.createElement("select");
+  sel.setAttribute("aria-label", u.username + " rolü");
+  for (const [value, label] of Object.entries(ROLES)) {
+    const o = document.createElement("option");
+    o.value = value;
+    o.textContent = label;
+    sel.append(o);
+  }
+  sel.value = u.role;
+  sel.addEventListener("change", () => changeUser(u, { role: sel.value }));
+  roleTd.append(sel);
+  const state = !u.active ? "Pasif" : (u.locked ? "Kilitli" : "Etkin");
+  const actions = document.createElement("td");
+  actions.className = "actions";
+  actions.append(
+    button(u.active ? "Pasifleştir" : "Etkinleştir", u.active ? "danger" : "secondary",
+      () => changeUser(u, { active: !u.active })),
+    button("Parola sıfırla", "secondary", () => openReset(u)),
+  );
+  tr.append(cell(u.username + (self ? " (sen)" : "")), roleTd, cell(state), actions);
+  return tr;
+}
+
+function renderUserEvents(events) {
+  const list = $("user-events");
+  list.replaceChildren();
+  if (events.length === 0) {
+    const li = document.createElement("li");
+    li.textContent = "Henüz olay yok.";
+    list.append(li);
+    return;
+  }
+  for (const e of events) {
+    const li = document.createElement("li");
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    meta.textContent = new Date(e.created_at).toLocaleString("tr-TR") + " · " + e.username;
+    const change = document.createElement("div");
+    change.className = "change";
+    change.textContent = e.target + " — " + (USER_EVENTS[e.action] || e.action) +
+      (e.detail ? " (" + translateRoles(e.detail) + ")" : "");
+    li.append(meta, change);
+    list.append(li);
+  }
+}
+
+async function loadUsers() {
+  $("users-error").textContent = "";
+  try {
+    const [users, events] = await Promise.all([api("/users"), api("/user-events?limit=20")]);
+    $("users-rows").replaceChildren(...users.map(userRow));
+    renderUserEvents(events);
+  } catch (e) {
+    $("users-error").textContent = e.message;
+  }
+}
+
+async function changeUser(u, changes) {
+  const next = { role: u.role, active: u.active, ...changes };
+  const what = changes.role
+    ? "rolü \"" + ROLES[next.role] + "\" olacak"
+    : (next.active ? "yeniden etkinleştirilecek" : "pasifleştirilecek");
+  const ok = await confirmDialog(
+    u.username + " kullanıcısının " + what + " ve açık oturumları kapanacak. Devam edilsin mi?");
+  if (ok) {
+    try {
+      await api("/users/" + u.id, { method: "PUT", body: JSON.stringify(next) });
+      showToast("Kullanıcı güncellendi", false);
+    } catch (e) {
+      $("users-error").textContent = e.message;
+      showToast(e.message, true);
+    }
+  }
+  await loadUsers();
+}
+
+function openReset(u) {
+  resetTarget = u;
+  $("reset-target").textContent = u.username + " için yeni parola belirle. Açık oturumları kapanır ve kilidi kalkar.";
+  $("reset-pass").value = "";
+  $("reset-error").textContent = "";
+  $("reset-dialog").showModal();
+}
+
+function openPasswordDialog() {
+  for (const id of ["pw-old", "pw-new", "pw-new2"]) $(id).value = "";
+  $("pw-error").textContent = "";
+  $("pw-dialog").showModal();
+}
+
+$("users-btn").addEventListener("click", () => { $("users-dialog").showModal(); loadUsers(); });
+$("users-close").addEventListener("click", () => $("users-dialog").close());
+$("pw-btn").addEventListener("click", openPasswordDialog);
+$("pw-cancel").addEventListener("click", () => $("pw-dialog").close());
+$("reset-cancel").addEventListener("click", () => $("reset-dialog").close());
+
+$("pw-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  $("pw-error").textContent = "";
+  if ($("pw-new").value !== $("pw-new2").value) {
+    $("pw-error").textContent = "Yeni parolalar aynı değil";
+    return;
+  }
+  try {
+    await api("/me/password", {
+      method: "POST",
+      body: JSON.stringify({ old_password: $("pw-old").value, new_password: $("pw-new").value }),
+    });
+    $("pw-dialog").close();
+    showToast("Parolan değişti, diğer oturumların kapatıldı", false);
+  } catch (e) {
+    $("pw-error").textContent = e.message;
+  }
+});
+
+$("reset-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  $("reset-error").textContent = "";
+  try {
+    await api("/users/" + resetTarget.id + "/password", {
+      method: "POST",
+      body: JSON.stringify({ new_password: $("reset-pass").value }),
+    });
+    $("reset-dialog").close();
+    showToast("Parola sıfırlandı", false);
+    await loadUsers();
+  } catch (e) {
+    $("reset-error").textContent = e.message;
+  }
+});
+
+$("user-add-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  $("users-error").textContent = "";
+  try {
+    await api("/users", {
+      method: "POST",
+      body: JSON.stringify({
+        username: $("nu-name").value,
+        password: $("nu-pass").value,
+        role: $("nu-role").value,
+      }),
+    });
+    $("nu-name").value = "";
+    $("nu-pass").value = "";
+    showToast("Kullanıcı eklendi", false);
+    await loadUsers();
+  } catch (e) {
+    $("users-error").textContent = e.message;
+  }
+});
+
 restorePrefs();
 token = loadToken();
 show(Boolean(token));
-if (token) loadDevices();
+if (token) { loadMe(); loadDevices(); }
 loadVersion();

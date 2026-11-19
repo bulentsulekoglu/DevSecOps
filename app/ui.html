@@ -10,6 +10,9 @@
   <header>
     <h1>IT Asset Portal</h1>
     <div class="header-actions">
+      <span id="who" hidden></span>
+      <button id="users-btn" type="button" class="secondary" hidden>Kullanıcılar</button>
+      <button id="pw-btn" type="button" class="secondary" hidden>Parolamı değiştir</button>
       <button id="theme-btn" type="button" class="secondary" aria-label="Temayı değiştir">Tema</button>
       <button id="logout" type="button" hidden>Çıkış</button>
     </div>
@@ -146,6 +149,56 @@
     <ul id="history-list" class="history-list"></ul>
     <div class="buttons">
       <button id="history-close" type="button" class="secondary">Kapat</button>
+    </div>
+  </dialog>
+  <dialog id="pw-dialog">
+    <h3>Parolamı değiştir</h3>
+    <form id="pw-form">
+      <label>Eski parola <input id="pw-old" type="password" autocomplete="current-password" required></label>
+      <label>Yeni parola (en az 12 karakter) <input id="pw-new" type="password" autocomplete="new-password" minlength="12" required></label>
+      <label>Yeni parola (tekrar) <input id="pw-new2" type="password" autocomplete="new-password" minlength="12" required></label>
+      <p id="pw-error" class="error" role="alert"></p>
+      <div class="buttons">
+        <button type="submit">Değiştir</button>
+        <button id="pw-cancel" type="button" class="secondary">Vazgeç</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="reset-dialog">
+    <h3>Parola sıfırla</h3>
+    <form id="reset-form">
+      <p id="reset-target"></p>
+      <label>Yeni parola (en az 12 karakter) <input id="reset-pass" type="password" autocomplete="new-password" minlength="12" required></label>
+      <p id="reset-error" class="error" role="alert"></p>
+      <div class="buttons">
+        <button type="submit">Sıfırla</button>
+        <button id="reset-cancel" type="button" class="secondary">Vazgeç</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="users-dialog">
+    <h3>Kullanıcılar</h3>
+    <p id="users-error" class="error" role="alert"></p>
+    <table class="users-table">
+      <thead><tr><th>Kullanıcı</th><th>Rol</th><th>Durum</th><th>İşlem</th></tr></thead>
+      <tbody id="users-rows"></tbody>
+    </table>
+    <form id="user-add-form" class="user-add">
+      <label>Yeni kullanıcı adı <input id="nu-name" maxlength="50" pattern="[A-Za-z0-9._\-]{3,50}" title="3-50 karakter: harf, rakam, nokta, alt çizgi, tire" required></label>
+      <label>Parola (en az 12) <input id="nu-pass" type="password" autocomplete="new-password" minlength="12" required></label>
+      <label>Rol
+        <select id="nu-role">
+          <option value="viewer">Okuyucu</option>
+          <option value="editor">Düzenleyici</option>
+          <option value="admin">Yönetici</option>
+        </select>
+      </label>
+      <button type="submit">Kullanıcı ekle</button>
+    </form>
+    <h4>Son kullanıcı olayları</h4>
+    <ul id="user-events" class="history-list"></ul>
+    <div class="buttons">
+      <button id="users-close" type="button" class="secondary">Kapat</button>
     </div>
   </dialog>
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
