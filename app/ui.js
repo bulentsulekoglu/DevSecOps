@@ -3,10 +3,18 @@
 const $ = (id) => document.getElementById(id);
 const STATUS = { active: "Kullanımda", in_repair: "Tamirde", retired: "Emekli" };
 const FIELDS = ["name", "asset_tag", "device_type", "owner", "location"];
+const SORT_KEYS = ["id", "name", "asset_tag", "device_type", "owner", "location", "status"];
+const PREF_KEY = "ui-prefs";
 let token = null;
 let editingId = null;
 let allDevices = [];
+let visibleDevices = [];
+let pendingType = "";
+let toastTimer = null;
+const selected = new Set();
 const view = { mode: "list", sortKey: "id", sortDir: 1 };
+
+// --- Tarayıcı depolaması (engellenmiş olabilir, her yerde try/catch) ---
 
 function loadToken() {
   try { return sessionStorage.getItem("token"); } catch (e) { return null; }
@@ -18,6 +26,32 @@ function saveToken(value) {
     else sessionStorage.removeItem("token");
   } catch (e) { /* tarayıcı depolamayı engellemiş olabilir */ }
 }
+
+function savePrefs() {
+  try {
+    localStorage.setItem(PREF_KEY, JSON.stringify({
+      mode: view.mode,
+      sortKey: view.sortKey,
+      sortDir: view.sortDir,
+      status: $("filter-status").value,
+      type: $("filter-type").value || pendingType,
+      theme: document.documentElement.dataset.theme || "",
+    }));
+  } catch (e) { /* tercihler kaydedilemedi, sorun değil */ }
+}
+
+function restorePrefs() {
+  let prefs = {};
+  try { prefs = JSON.parse(localStorage.getItem(PREF_KEY) || "{}") || {}; } catch (e) { prefs = {}; }
+  if (prefs.mode === "list" || prefs.mode === "owner") view.mode = prefs.mode;
+  if (SORT_KEYS.includes(prefs.sortKey)) view.sortKey = prefs.sortKey;
+  if (prefs.sortDir === 1 || prefs.sortDir === -1) view.sortDir = prefs.sortDir;
+  if (prefs.status in STATUS) $("filter-status").value = prefs.status;
+  if (typeof prefs.type === "string") pendingType = prefs.type;
+  if (prefs.theme === "dark" || prefs.theme === "light") document.documentElement.dataset.theme = prefs.theme;
+}
+
+// --- API ---
 
 async function api(path, options = {}) {
   const headers = {};
@@ -49,12 +83,13 @@ function signOut() {
   token = null;
   saveToken(null);
   allDevices = [];
+  selected.clear();
   render();
   closeForm();
   show(false);
 }
 
-// --- Süzme, sıralama, gruplama (saf fonksiyonlar) ---
+// --- Süzme, sıralama, gruplama, CSV (saf fonksiyonlar) ---
 
 function filterDevices(devices, query, status, type) {
   const q = (query || "").trim().toLowerCase();
@@ -100,6 +135,38 @@ function countByStatus(devices) {
   return counts;
 }
 
+// Excel'de formül olarak çalışabilecek hücreler (=, +, -, @ ile başlayanlar) başına ' konur.
+function csvCell(value) {
+  let s = value === null || value === undefined ? "" : String(value);
+  if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
+  if (/[";\n\r]/.test(s)) s = '"' + s.replace(/"/g, '""') + '"';
+  return s;
+}
+
+function toCsv(devices) {
+  const header = ["ID", "Ad", "Demirbaş etiketi", "Tür", "Sahibi", "Konum", "Durum", "Oluşturulma", "Güncellenme"];
+  const lines = [header.map(csvCell).join(";")];
+  for (const d of devices) {
+    lines.push([
+      d.id, d.name, d.asset_tag, d.device_type, d.owner, d.location,
+      STATUS[d.status] || d.status, d.created_at, d.updated_at,
+    ].map(csvCell).join(";"));
+  }
+  return lines.join("\r\n");
+}
+
+function bulkBody(device, changes) {
+  return {
+    name: device.name,
+    asset_tag: device.asset_tag,
+    device_type: device.device_type,
+    owner: device.owner || null,
+    location: device.location || null,
+    status: device.status,
+    ...changes,
+  };
+}
+
 // --- Ekrana çizim (metinler her zaman textContent ile yazılır) ---
 
 function cell(text) {
@@ -124,11 +191,28 @@ function statusBadge(status) {
   return badge;
 }
 
+function selectCell(device) {
+  const td = document.createElement("td");
+  td.className = "sel";
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.checked = selected.has(device.id);
+  box.setAttribute("aria-label", device.name + " seç");
+  box.addEventListener("change", () => {
+    if (box.checked) selected.add(device.id);
+    else selected.delete(device.id);
+    updateBulkBar();
+  });
+  td.append(box);
+  return td;
+}
+
 function renderRows(devices) {
   const rows = $("rows");
   rows.replaceChildren();
   for (const d of devices) {
     const tr = document.createElement("tr");
+    tr.append(selectCell(d));
     tr.append(cell(d.name), cell(d.asset_tag), cell(d.device_type), cell(d.owner), cell(d.location));
     const statusCell = document.createElement("td");
     statusCell.append(statusBadge(d.status));
@@ -185,7 +269,8 @@ function renderStats(devices) {
 
 function refreshTypeFilter(devices) {
   const select = $("filter-type");
-  const current = select.value;
+  const current = select.value || pendingType;
+  pendingType = "";
   const types = [...new Set(devices.map((d) => d.device_type))].sort((a, b) => a.localeCompare(b, "tr"));
   select.replaceChildren();
   const all = document.createElement("option");
@@ -209,11 +294,23 @@ function updateSortHeaders() {
   }
 }
 
+function updateBulkBar() {
+  const count = selected.size;
+  $("bulk-count").textContent = String(count);
+  $("bulk-bar").hidden = count === 0 || view.mode !== "list";
+  const all = visibleDevices.length > 0 && visibleDevices.every((d) => selected.has(d.id));
+  $("select-all").checked = all;
+}
+
 function render() {
+  const existing = new Set(allDevices.map((d) => d.id));
+  for (const id of [...selected]) {
+    if (!existing.has(id)) selected.delete(id);
+  }
   renderStats(allDevices);
   refreshTypeFilter(allDevices);
   const filtered = filterDevices(allDevices, $("search").value, $("filter-status").value, $("filter-type").value);
-  const sorted = sortDevices(filtered, view.sortKey, view.sortDir);
+  visibleDevices = sortDevices(filtered, view.sortKey, view.sortDir);
   const filtering = filtered.length !== allDevices.length;
   $("count").textContent = "(" + (filtering ? filtered.length + " / " + allDevices.length : allDevices.length) + ")";
   $("empty").hidden = filtered.length > 0;
@@ -223,9 +320,39 @@ function render() {
   $("view-list").classList.toggle("active", view.mode === "list");
   $("view-owner").classList.toggle("active", view.mode === "owner");
   updateSortHeaders();
-  if (view.mode === "list") renderRows(sorted);
-  else renderOwners(sorted);
+  if (view.mode === "list") renderRows(visibleDevices);
+  else renderOwners(visibleDevices);
+  updateBulkBar();
+  savePrefs();
 }
+
+// --- Bildirim ve onay penceresi ---
+
+function showToast(message, isError) {
+  const toast = $("toast");
+  toast.textContent = message;
+  toast.className = "toast" + (isError ? " error" : "");
+  toast.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { toast.hidden = true; }, 3500);
+}
+
+function confirmDialog(text) {
+  return new Promise((resolve) => {
+    const dialog = $("confirm-dialog");
+    $("confirm-text").textContent = text;
+    const finish = (answer) => {
+      dialog.close();
+      resolve(answer);
+    };
+    $("confirm-yes").onclick = () => finish(true);
+    $("confirm-no").onclick = () => finish(false);
+    dialog.addEventListener("cancel", () => resolve(false), { once: true });
+    dialog.showModal();
+  });
+}
+
+// --- Veri işlemleri ---
 
 async function loadDevices() {
   $("list-error").textContent = "";
@@ -236,8 +363,6 @@ async function loadDevices() {
     $("list-error").textContent = e.message;
   }
 }
-
-// --- Form ve işlemler ---
 
 function openForm(device) {
   editingId = device ? device.id : null;
@@ -259,13 +384,58 @@ function closeForm() {
 }
 
 async function removeDevice(device) {
-  if (!window.confirm('"' + device.name + '" silinsin mi?')) return;
+  if (!(await confirmDialog('"' + device.name + '" silinsin mi?'))) return;
   try {
     await api("/devices/" + device.id, { method: "DELETE" });
+    selected.delete(device.id);
     await loadDevices();
+    showToast("Cihaz silindi", false);
   } catch (e) {
     $("list-error").textContent = e.message;
   }
+}
+
+async function bulkRun(label, action) {
+  const targets = allDevices.filter((d) => selected.has(d.id));
+  if (targets.length === 0) return;
+  if (!(await confirmDialog(targets.length + " cihaz için işlem: " + label + ". Devam edilsin mi?"))) return;
+  let ok = 0;
+  let failed = 0;
+  for (const d of targets) {
+    try {
+      await action(d);
+      ok += 1;
+    } catch (e) {
+      failed += 1;
+    }
+  }
+  selected.clear();
+  await loadDevices();
+  showToast(ok + " cihaz işlendi" + (failed ? ", " + failed + " başarısız" : ""), failed > 0);
+}
+
+function bulkUpdate(label, changes) {
+  return bulkRun(label, (d) => api("/devices/" + d.id, { method: "PUT", body: JSON.stringify(bulkBody(d, changes)) }));
+}
+
+function downloadCsv() {
+  const blob = new Blob(["\uFEFF" + toCsv(visibleDevices)], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "cihazlar-" + new Date().toISOString().slice(0, 10) + ".csv";
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  showToast(visibleDevices.length + " cihaz CSV olarak indirildi", false);
+}
+
+function toggleTheme() {
+  const root = document.documentElement;
+  const effective = root.dataset.theme || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  root.dataset.theme = effective === "dark" ? "light" : "dark";
+  savePrefs();
 }
 
 async function loadVersion() {
@@ -275,6 +445,8 @@ async function loadVersion() {
     $("version").textContent = data.version || "-";
   } catch (e) { /* sürüm bilgisi alınamadı, sayfa yine çalışır */ }
 }
+
+// --- Olaylar ---
 
 $("login-form").addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -304,11 +476,40 @@ $("logout").addEventListener("click", async () => {
 
 $("new-btn").addEventListener("click", () => openForm(null));
 $("cancel-btn").addEventListener("click", closeForm);
+$("csv-btn").addEventListener("click", downloadCsv);
+$("print-btn").addEventListener("click", () => window.print());
+$("theme-btn").addEventListener("click", toggleTheme);
 $("search").addEventListener("input", render);
 $("filter-status").addEventListener("change", render);
 $("filter-type").addEventListener("change", render);
 $("view-list").addEventListener("click", () => { view.mode = "list"; render(); });
 $("view-owner").addEventListener("click", () => { view.mode = "owner"; render(); });
+
+$("select-all").addEventListener("change", () => {
+  for (const d of visibleDevices) {
+    if ($("select-all").checked) selected.add(d.id);
+    else selected.delete(d.id);
+  }
+  render();
+});
+
+$("bulk-owner-btn").addEventListener("click", () => {
+  const owner = $("bulk-owner").value.trim();
+  if (!owner) { showToast("Önce yeni sahibin adını yaz", true); return; }
+  bulkUpdate("sahibi \"" + owner + "\" yap", { owner });
+});
+
+$("bulk-owner-clear").addEventListener("click", () => bulkUpdate("sahibini boşalt", { owner: null }));
+
+$("bulk-status-btn").addEventListener("click", () => {
+  const status = $("bulk-status").value;
+  if (!status) { showToast("Önce bir durum seç", true); return; }
+  bulkUpdate("durumu \"" + STATUS[status] + "\" yap", { status });
+});
+
+$("bulk-delete").addEventListener("click", () => {
+  bulkRun("sil", (d) => api("/devices/" + d.id, { method: "DELETE" }));
+});
 
 for (const b of document.querySelectorAll(".th-btn")) {
   b.addEventListener("click", () => {
@@ -318,9 +519,17 @@ for (const b of document.querySelectorAll(".th-btn")) {
   });
 }
 
+for (const card of document.querySelectorAll(".stat")) {
+  card.addEventListener("click", () => {
+    $("filter-status").value = card.dataset.filter;
+    render();
+  });
+}
+
 $("device-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   $("form-error").textContent = "";
+  const isNew = editingId === null;
   const body = JSON.stringify({
     name: $("f-name").value,
     asset_tag: $("f-asset-tag").value,
@@ -330,15 +539,17 @@ $("device-form").addEventListener("submit", async (event) => {
     status: $("f-status").value,
   });
   try {
-    if (editingId === null) await api("/devices", { method: "POST", body });
+    if (isNew) await api("/devices", { method: "POST", body });
     else await api("/devices/" + editingId, { method: "PUT", body });
     closeForm();
     await loadDevices();
+    showToast(isNew ? "Cihaz eklendi" : "Cihaz güncellendi", false);
   } catch (e) {
     $("form-error").textContent = e.message;
   }
 });
 
+restorePrefs();
 token = loadToken();
 show(Boolean(token));
 if (token) loadDevices();

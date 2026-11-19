@@ -9,7 +9,10 @@
 <body>
   <header>
     <h1>IT Asset Portal</h1>
-    <button id="logout" type="button" hidden>Çıkış</button>
+    <div class="header-actions">
+      <button id="theme-btn" type="button" class="secondary" aria-label="Temayı değiştir">Tema</button>
+      <button id="logout" type="button" hidden>Çıkış</button>
+    </div>
   </header>
 
   <main>
@@ -29,15 +32,19 @@
 
     <section id="app-view" hidden>
       <div class="stats">
-        <div class="stat"><span class="num" id="s-total">0</span><span class="label">Toplam cihaz</span></div>
-        <div class="stat active"><span class="num" id="s-active">0</span><span class="label">Kullanımda</span></div>
-        <div class="stat in_repair"><span class="num" id="s-in_repair">0</span><span class="label">Tamirde</span></div>
-        <div class="stat retired"><span class="num" id="s-retired">0</span><span class="label">Emekli</span></div>
+        <div class="stat" data-filter=""><span class="num" id="s-total">0</span><span class="label">Toplam cihaz</span></div>
+        <div class="stat active" data-filter="active"><span class="num" id="s-active">0</span><span class="label">Kullanımda</span></div>
+        <div class="stat in_repair" data-filter="in_repair"><span class="num" id="s-in_repair">0</span><span class="label">Tamirde</span></div>
+        <div class="stat retired" data-filter="retired"><span class="num" id="s-retired">0</span><span class="label">Emekli</span></div>
       </div>
 
       <div class="toolbar">
         <h2>Cihazlar <span id="count"></span></h2>
-        <button id="new-btn" type="button">Yeni cihaz</button>
+        <div class="buttons">
+          <button id="csv-btn" type="button" class="secondary">CSV indir</button>
+          <button id="print-btn" type="button" class="secondary">Yazdır</button>
+          <button id="new-btn" type="button">Yeni cihaz</button>
+        </div>
       </div>
 
       <form id="device-form" hidden>
@@ -78,6 +85,21 @@
         </div>
       </div>
 
+      <div id="bulk-bar" class="bulk-bar" hidden>
+        <strong><span id="bulk-count">0</span> cihaz seçili</strong>
+        <input id="bulk-owner" maxlength="100" placeholder="Yeni sahibi" aria-label="Yeni sahibi">
+        <button id="bulk-owner-btn" type="button">Sahibini ata</button>
+        <button id="bulk-owner-clear" type="button" class="secondary">Sahibini boşalt</button>
+        <select id="bulk-status" aria-label="Yeni durum">
+          <option value="">Durum seç</option>
+          <option value="active">Kullanımda</option>
+          <option value="in_repair">Tamirde</option>
+          <option value="retired">Emekli</option>
+        </select>
+        <button id="bulk-status-btn" type="button">Durumu uygula</button>
+        <button id="bulk-delete" type="button" class="danger">Seçilenleri sil</button>
+      </div>
+
       <p id="list-error" class="error" role="alert"></p>
       <p id="empty" hidden></p>
 
@@ -85,6 +107,7 @@
         <table>
           <thead>
             <tr>
+              <th class="sel"><input type="checkbox" id="select-all" aria-label="Hepsini seç"></th>
               <th><button type="button" class="th-btn" data-sort="name">Ad</button></th>
               <th><button type="button" class="th-btn" data-sort="asset_tag">Demirbaş etiketi</button></th>
               <th><button type="button" class="th-btn" data-sort="device_type">Tür</button></th>
@@ -102,6 +125,16 @@
   </main>
 
   <footer>Sürüm: <span id="version">-</span></footer>
+
+  <dialog id="confirm-dialog">
+    <p id="confirm-text"></p>
+    <div class="buttons">
+      <button id="confirm-yes" type="button" class="danger">Evet</button>
+      <button id="confirm-no" type="button" class="secondary">Vazgeç</button>
+    </div>
+  </dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
   <script src="/ui/app.js"></script>
 </body>
 </html>
