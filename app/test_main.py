@@ -521,3 +521,11 @@ def test_user_events_are_recorded(client, auth):
     assert all(e["username"] == ADMIN["username"] for e in events)
     role_event = next(e for e in events if e["action"] == "role")
     assert role_event["detail"] == "viewer -> editor"
+
+
+def test_version_has_release_number(client):
+    import re
+
+    r = client.get("/version")
+    assert r.status_code == 200
+    assert re.fullmatch(r"\d+\.\d+\.\d+", r.json()["release"])

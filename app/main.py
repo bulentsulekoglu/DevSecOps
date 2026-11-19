@@ -228,9 +228,19 @@ def health():
     return {"status": "ok"}
 
 
+def read_release() -> str:
+    try:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION")
+        with open(path, encoding="utf-8") as f:
+            return f.read().strip() or "dev"
+    except OSError:
+        return "dev"
+
+
 @app.get("/version")
 def version():
     return {
+        "release": read_release(),
         "version": os.environ.get("APP_VERSION", "dev"),
         "image": os.environ.get("APP_IMAGE", "unknown"),
     }
