@@ -352,12 +352,6 @@ def record_history(conn, device_id, name, asset_tag, action, changes, username):
     )
 
 
-HISTORY_SELECT = (
-    "SELECT id, device_id, device_name, asset_tag, action, changes, username, "
-    "created_at FROM device_history"
-)
-
-
 def history_dict(r) -> dict:
     return {
         "id": r[0],
@@ -508,7 +502,9 @@ def device_history(
 ):
     with get_conn() as conn:
         rows = conn.execute(
-            HISTORY_SELECT + " WHERE device_id = %s ORDER BY id DESC LIMIT %s",
+            "SELECT id, device_id, device_name, asset_tag, action, changes, "
+            "username, created_at FROM device_history "
+            "WHERE device_id = %s ORDER BY id DESC LIMIT %s",
             (device_id, limit),
         ).fetchall()
     return [history_dict(r) for r in rows]
@@ -522,7 +518,9 @@ def recent_history(
 ):
     with get_conn() as conn:
         rows = conn.execute(
-            HISTORY_SELECT + " ORDER BY id DESC LIMIT %s OFFSET %s",
+            "SELECT id, device_id, device_name, asset_tag, action, changes, "
+            "username, created_at FROM device_history "
+            "ORDER BY id DESC LIMIT %s OFFSET %s",
             (limit, offset),
         ).fetchall()
     return [history_dict(r) for r in rows]
