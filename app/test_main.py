@@ -24,6 +24,13 @@ def clean_state(client):
         conn.execute("DELETE FROM sessions")
         conn.execute("DELETE FROM devices")
         conn.execute("DELETE FROM device_history")
+        conn.execute("DELETE FROM user_events")
+        conn.execute("DELETE FROM users WHERE username <> %s", (ADMIN["username"],))
+        conn.execute(
+            "UPDATE users SET role = 'admin', active = TRUE, failed_attempts = 0, "
+            "locked_until = NULL WHERE username = %s",
+            (ADMIN["username"],),
+        )
 
 
 @pytest.fixture()
@@ -315,3 +322,202 @@ def test_son_hareketler_listesi(client, auth):
 def test_gecmis_giris_ister(client):
     assert client.get("/history").status_code == 401
     assert client.get("/devices/1/history").status_code == 401
+
+
+# --- Roller, kullanıcı yönetimi, parola, kilitleme ---
+PASS = "Cok-Guclu-Parola-1"
+NEW_PASS = PASS + "-yeni"
+
+
+def make_user(client, auth, name, role, password=None):
+    password = password or PASS
+    r = client.post(
+        "/users",
+        json={"username": name, "password": password, "role": role},
+        headers=auth,
+    )
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+def login_as(client, name, password=None):
+    password = password or PASS
+    r = client.post("/login", json={"username": name, "password": password})
+    assert r.status_code == 200, r.text
+    return {"Authorization": f"Bearer {r.json()['access_token']}"}
+
+
+def admin_id(client, auth):
+    users = client.get("/users", headers=auth).json()
+    return next(u["id"] for u in users if u["username"] == ADMIN["username"])
+
+
+def test_me_reports_role(client, auth):
+    r = client.get("/me", headers=auth)
+    assert r.status_code == 200
+    assert r.json() == {"username": ADMIN["username"], "role": "admin"}
+
+
+def test_viewer_can_read_but_not_change(client, auth):
+    d = client.post("/devices", json=new_device(), headers=auth).json()
+    make_user(client, auth, "izleyici", "viewer")
+    v = login_as(client, "izleyici")
+    assert client.get("/devices", headers=v).status_code == 200
+    assert client.get("/devices/%d/history" % d["id"], headers=v).status_code == 200
+    assert client.post("/devices", json=new_device(asset_tag="X-1"), headers=v).status_code == 403
+    assert client.put("/devices/%d" % d["id"], json=new_device(), headers=v).status_code == 403
+    assert client.delete("/devices/%d" % d["id"], headers=v).status_code == 403
+    assert client.get("/me", headers=v).json()["role"] == "viewer"
+
+
+def test_editor_can_change_devices_but_not_users(client, auth):
+    make_user(client, auth, "duzenleyen", "editor")
+    e = login_as(client, "duzenleyen")
+    r = client.post("/devices", json=new_device(), headers=e)
+    assert r.status_code == 201
+    did = r.json()["id"]
+    assert client.put("/devices/%d" % did, json=new_device(owner="can"), headers=e).status_code == 200
+    assert client.delete("/devices/%d" % did, headers=e).status_code == 204
+    assert client.get("/users", headers=e).status_code == 403
+    assert client.get("/user-events", headers=e).status_code == 403
+    r = client.post(
+        "/users",
+        json={"username": "yeni-kisi", "password": PASS, "role": "viewer"},
+        headers=e,
+    )
+    assert r.status_code == 403
+
+
+def test_users_need_login(client):
+    assert client.get("/users").status_code == 401
+    assert client.post("/me/password", json={}).status_code == 401
+
+
+def test_create_user_validation(client, auth):
+    make_user(client, auth, "ali", "viewer")
+    base = {"username": "ali", "password": PASS, "role": "viewer"}
+    assert client.post("/users", json=base, headers=auth).status_code == 409
+    short = dict(base, username="veli", password="kisa")
+    assert client.post("/users", json=short, headers=auth).status_code == 422
+    bad_name = dict(base, username="bo ş!")
+    assert client.post("/users", json=bad_name, headers=auth).status_code == 422
+    bad_role = dict(base, username="veli", role="root")
+    assert client.post("/users", json=bad_role, headers=auth).status_code == 422
+
+
+def test_last_admin_is_protected(client, auth):
+    aid = admin_id(client, auth)
+    r = client.put("/users/%d" % aid, json={"role": "viewer", "active": True}, headers=auth)
+    assert r.status_code == 409
+    r = client.put("/users/%d" % aid, json={"role": "admin", "active": False}, headers=auth)
+    assert r.status_code == 409
+    # İkinci yönetici varsa birincisi düşürülebilir
+    make_user(client, auth, "ikinci-admin", "admin")
+    r = client.put("/users/%d" % aid, json={"role": "viewer", "active": True}, headers=auth)
+    assert r.status_code == 200
+
+
+def test_update_unknown_user_is_404(client, auth):
+    r = client.put("/users/999999", json={"role": "viewer", "active": True}, headers=auth)
+    assert r.status_code == 404
+
+
+def test_deactivated_user_cannot_login_and_loses_session(client, auth):
+    u = make_user(client, auth, "gecici", "editor")
+    h = login_as(client, "gecici")
+    assert client.get("/devices", headers=h).status_code == 200
+    r = client.put("/users/%d" % u["id"], json={"role": "editor", "active": False}, headers=auth)
+    assert r.status_code == 200
+    assert client.get("/devices", headers=h).status_code == 401
+    r = client.post("/login", json={"username": "gecici", "password": PASS})
+    assert r.status_code == 401
+    client.put("/users/%d" % u["id"], json={"role": "editor", "active": True}, headers=auth)
+    login_as(client, "gecici")
+
+
+def test_role_change_closes_sessions(client, auth):
+    u = make_user(client, auth, "terfi", "viewer")
+    h = login_as(client, "terfi")
+    client.put("/users/%d" % u["id"], json={"role": "editor", "active": True}, headers=auth)
+    assert client.get("/devices", headers=h).status_code == 401
+    h2 = login_as(client, "terfi")
+    assert client.get("/me", headers=h2).json()["role"] == "editor"
+
+
+def test_admin_resets_password(client, auth):
+    u = make_user(client, auth, "unutkan", "viewer")
+    old = login_as(client, "unutkan")
+    r = client.post(
+        "/users/%d/password" % u["id"], json={"new_password": NEW_PASS}, headers=auth
+    )
+    assert r.status_code == 204
+    assert client.get("/devices", headers=old).status_code == 401
+    assert client.post("/login", json={"username": "unutkan", "password": PASS}).status_code == 401
+    login_as(client, "unutkan", NEW_PASS)
+    short = client.post("/users/%d/password" % u["id"], json={"new_password": "kisa"}, headers=auth)
+    assert short.status_code == 422
+    missing = client.post("/users/999999/password", json={"new_password": PASS}, headers=auth)
+    assert missing.status_code == 404
+
+
+def test_change_own_password(client, auth):
+    make_user(client, auth, "kendi", "editor")
+    a = login_as(client, "kendi")
+    b = login_as(client, "kendi")
+    wrong = client.post(
+        "/me/password", json={"old_password": "yanlis", "new_password": NEW_PASS}, headers=a
+    )
+    assert wrong.status_code == 403
+    weak = client.post("/me/password", json={"old_password": PASS, "new_password": "kisa"}, headers=a)
+    assert weak.status_code == 422
+    ok = client.post(
+        "/me/password", json={"old_password": PASS, "new_password": NEW_PASS}, headers=a
+    )
+    assert ok.status_code == 204
+    assert client.get("/devices", headers=a).status_code == 200
+    assert client.get("/devices", headers=b).status_code == 401
+    assert client.post("/login", json={"username": "kendi", "password": PASS}).status_code == 401
+    login_as(client, "kendi", NEW_PASS)
+
+
+def test_failed_logins_lock_account(client, auth):
+    u = make_user(client, auth, "kilitli", "viewer")
+    for _ in range(main.MAX_FAILED_LOGINS):
+        r = client.post("/login", json={"username": "kilitli", "password": "yanlis-parola"})
+        assert r.status_code == 401
+    # Doğru parola bile kilit sürerken kabul edilmez
+    assert client.post("/login", json={"username": "kilitli", "password": PASS}).status_code == 401
+    locked = next(x for x in client.get("/users", headers=auth).json() if x["id"] == u["id"])
+    assert locked["locked"] is True
+    # Yönetici parolayı sıfırlayınca kilit kalkar
+    client.post("/users/%d/password" % u["id"], json={"new_password": PASS}, headers=auth)
+    login_as(client, "kilitli")
+
+
+def test_success_resets_failed_counter(client, auth):
+    make_user(client, auth, "dikkatli", "viewer")
+    for _ in range(main.MAX_FAILED_LOGINS - 1):
+        client.post("/login", json={"username": "dikkatli", "password": "yanlis"})
+    login_as(client, "dikkatli")
+    for _ in range(main.MAX_FAILED_LOGINS - 1):
+        client.post("/login", json={"username": "dikkatli", "password": "yanlis"})
+    login_as(client, "dikkatli")
+
+
+def test_unknown_user_gets_same_error(client):
+    a = client.post("/login", json={"username": "yok-boyle-biri", "password": "x"})
+    assert a.status_code == 401
+    assert a.json()["detail"] == main.LOGIN_ERROR
+
+
+def test_user_events_are_recorded(client, auth):
+    u = make_user(client, auth, "kayitli", "viewer")
+    client.put("/users/%d" % u["id"], json={"role": "editor", "active": True}, headers=auth)
+    client.put("/users/%d" % u["id"], json={"role": "editor", "active": False}, headers=auth)
+    client.post("/users/%d/password" % u["id"], json={"new_password": PASS}, headers=auth)
+    events = client.get("/user-events", headers=auth).json()
+    actions = [e["action"] for e in events if e["target"] == "kayitli"]
+    assert actions == ["password_reset", "deactivate", "role", "create"]
+    assert all(e["username"] == ADMIN["username"] for e in events)
+    role_event = next(e for e in events if e["action"] == "role")
+    assert role_event["detail"] == "viewer -> editor"
