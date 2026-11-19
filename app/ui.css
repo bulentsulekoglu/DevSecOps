@@ -103,3 +103,50 @@ td.actions button { padding: 4px 10px; font-size: 14px; }
 
 .error { color: var(--danger); margin: 0; min-height: 1.2em; }
 [hidden] { display: none !important; }
+
+/* --- Özet kartları, filtreler, sıralama ve "kimde ne var" görünümü --- */
+:root { --ok: #1b7a3a; --warn: #a15c00; }
+
+@media (prefers-color-scheme: dark) {
+  :root { --ok: #6fcf97; --warn: #f0b45a; }
+}
+
+.badge.active { color: var(--ok); }
+.badge.in_repair { color: var(--warn); }
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  margin: 16px 0;
+}
+
+.stat { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; }
+.stat .num { display: block; font-size: 28px; font-weight: 600; }
+.stat .label { color: var(--muted); font-size: 14px; }
+.stat.active .num { color: var(--ok); }
+.stat.in_repair .num { color: var(--warn); }
+.stat.retired .num { color: var(--muted); }
+
+.filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; align-items: center; }
+.filters input[type="search"] { flex: 1 1 220px; }
+.view-toggle { display: flex; gap: 4px; margin-left: auto; }
+button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+.th-btn {
+  background: none;
+  color: var(--muted);
+  padding: 0;
+  font-size: 13px;
+  font-weight: 600;
+  border: 0;
+}
+
+.owner-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+.owner-card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; }
+.owner-card.unassigned { border-style: dashed; }
+.owner-card h3 { display: flex; justify-content: space-between; margin: 0 0 8px; }
+.owner-card ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.owner-card li { display: flex; justify-content: space-between; gap: 8px; align-items: center; border-top: 1px solid var(--line); padding-top: 8px; }
+.owner-card .meta { color: var(--muted); font-size: 13px; }
+.owner-card .item-name { display: block; }

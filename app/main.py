@@ -387,3 +387,8 @@ def ui_css():
 @app.get("/ui/app.js", include_in_schema=False)
 def ui_js():
     return ui_response("ui.js", "text/javascript; charset=utf-8")
+
+
+@app.get("/", include_in_schema=False)
+def ui_root():
+    return ui_response("ui.html", "text/html; charset=utf-8")
