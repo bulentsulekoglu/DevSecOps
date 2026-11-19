@@ -351,3 +351,39 @@ def delete_device(device_id: int, user: dict = Depends(current_user)):
     if row is None:
         raise HTTPException(status_code=404, detail="Cihaz bulunamadı")
     return Response(status_code=204)
+
+
+# --- Web arayüzü (sayfa giriş istemez, veri yine korumalı API'den gelir) ---
+
+UI_DIR = os.path.dirname(os.path.abspath(__file__))
+UI_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'none'; script-src 'self'; style-src 'self'; "
+        "connect-src 'self'; base-uri 'none'; form-action 'none'; "
+        "frame-ancestors 'none'"
+    ),
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "Cache-Control": "no-store",
+}
+
+
+def ui_response(filename: str, media_type: str) -> Response:
+    with open(os.path.join(UI_DIR, filename), "rb") as f:
+        content = f.read()
+    return Response(content=content, media_type=media_type, headers=UI_HEADERS)
+
+
+@app.get("/ui", include_in_schema=False)
+def ui_page():
+    return ui_response("ui.html", "text/html; charset=utf-8")
+
+
+@app.get("/ui/app.css", include_in_schema=False)
+def ui_css():
+    return ui_response("ui.css", "text/css; charset=utf-8")
+
+
+@app.get("/ui/app.js", include_in_schema=False)
+def ui_js():
+    return ui_response("ui.js", "text/javascript; charset=utf-8")

@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>IT Asset Portal</title>
+  <link rel="stylesheet" href="/ui/app.css">
+</head>
+<body>
+  <header>
+    <h1>IT Asset Portal</h1>
+    <button id="logout" type="button" hidden>Çıkış</button>
+  </header>
+
+  <main>
+    <section id="login-view">
+      <form id="login-form">
+        <h2>Giriş</h2>
+        <label>Kullanıcı adı
+          <input id="username" autocomplete="username" required>
+        </label>
+        <label>Parola
+          <input id="password" type="password" autocomplete="current-password" required>
+        </label>
+        <button type="submit">Giriş yap</button>
+        <p id="login-error" class="error" role="alert"></p>
+      </form>
+    </section>
+
+    <section id="app-view" hidden>
+      <div class="toolbar">
+        <h2>Cihazlar <span id="count"></span></h2>
+        <button id="new-btn" type="button">Yeni cihaz</button>
+      </div>
+
+      <form id="device-form" hidden>
+        <h3 id="form-title">Yeni cihaz</h3>
+        <label>Ad <input id="f-name" maxlength="100" required></label>
+        <label>Demirbaş etiketi <input id="f-asset-tag" maxlength="50" required></label>
+        <label>Tür <input id="f-type" maxlength="50" required placeholder="laptop, telefon, yazıcı"></label>
+        <label>Sahibi <input id="f-owner" maxlength="100"></label>
+        <label>Konum <input id="f-location" maxlength="100"></label>
+        <label>Durum
+          <select id="f-status">
+            <option value="active">Kullanımda</option>
+            <option value="in_repair">Tamirde</option>
+            <option value="retired">Emekli</option>
+          </select>
+        </label>
+        <div class="buttons">
+          <button type="submit">Kaydet</button>
+          <button id="cancel-btn" type="button" class="secondary">İptal</button>
+        </div>
+        <p id="form-error" class="error" role="alert"></p>
+      </form>
+
+      <p id="list-error" class="error" role="alert"></p>
+      <p id="empty" hidden>Henüz cihaz yok.</p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Ad</th><th>Demirbaş etiketi</th><th>Tür</th>
+              <th>Sahibi</th><th>Konum</th><th>Durum</th><th>İşlem</th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <footer>Sürüm: <span id="version">-</span></footer>
+  <script src="/ui/app.js"></script>
+</body>
+</html>

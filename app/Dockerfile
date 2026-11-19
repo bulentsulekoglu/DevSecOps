@@ -23,7 +23,7 @@ COPY --from=build /install /usr/local
 RUN python -m pip uninstall -y pip
 
 WORKDIR /app
-COPY main.py .
+COPY main.py ui.html ui.css ui.js ./
 
 ARG APP_VERSION=dev
 ENV APP_VERSION=$APP_VERSION
