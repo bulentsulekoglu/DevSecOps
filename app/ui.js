@@ -253,6 +253,7 @@ function renderRows(devices) {
     actions.className = "actions";
     actions.append(
       button("Düzenle", "secondary", () => openForm(d)),
+      button("Geçmiş", "secondary", () => openDeviceHistory(d)),
       button("Sil", "danger", () => removeDevice(d)),
     );
     tr.append(statusCell, actions);
@@ -480,6 +481,80 @@ function toggleTheme() {
   savePrefs();
 }
 
+// --- Geçmiş (denetim kaydı) ---
+
+const ACTIONS = { create: "Eklendi", update: "Güncellendi", delete: "Silindi" };
+const FIELD_LABELS = {
+  name: "Ad",
+  asset_tag: "Demirbaş etiketi",
+  device_type: "Tür",
+  owner: "Sahibi",
+  location: "Konum",
+  status: "Durum",
+  serial_number: "Seri numarası",
+  notes: "Not",
+  purchase_date: "Satın alma tarihi",
+  warranty_until: "Garanti bitişi",
+};
+
+function formatValue(field, value) {
+  if (value === null || value === undefined || value === "") return "(boş)";
+  if (field === "status") return STATUS[value] || value;
+  return String(value);
+}
+
+function describeChanges(changes) {
+  return Object.entries(changes || {}).map(([field, pair]) =>
+    (FIELD_LABELS[field] || field) + ": " + formatValue(field, pair[0]) + " → " + formatValue(field, pair[1]),
+  );
+}
+
+function showHistory(title, entries, withDeviceName) {
+  $("history-title").textContent = title;
+  const list = $("history-list");
+  list.replaceChildren();
+  if (entries.length === 0) {
+    const empty = document.createElement("li");
+    empty.textContent = "Kayıt yok.";
+    list.append(empty);
+  }
+  for (const e of entries) {
+    const li = document.createElement("li");
+    const head = document.createElement("strong");
+    head.textContent = (ACTIONS[e.action] || e.action) + (withDeviceName ? ": " + e.device_name + " (" + e.asset_tag + ")" : "");
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    meta.textContent = e.username + " · " + new Date(e.created_at).toLocaleString("tr-TR");
+    li.append(head, meta);
+    for (const line of describeChanges(e.changes)) {
+      const change = document.createElement("div");
+      change.className = "change";
+      change.textContent = line;
+      li.append(change);
+    }
+    list.append(li);
+  }
+  $("history-dialog").showModal();
+}
+
+async function openDeviceHistory(device) {
+  try {
+    const entries = await api("/devices/" + device.id + "/history?limit=100");
+    showHistory("Geçmiş: " + device.name, entries, false);
+  } catch (e) {
+    $("list-error").textContent = e.message;
+  }
+}
+
+async function openRecentHistory() {
+  try {
+    const entries = await api("/history?limit=100");
+    showHistory("Son hareketler", entries, true);
+  } catch (e) {
+    $("list-error").textContent = e.message;
+  }
+}
+
 async function loadVersion() {
   try {
     const res = await fetch("/version");
@@ -599,6 +674,9 @@ $("device-form").addEventListener("submit", async (event) => {
     $("form-error").textContent = e.message;
   }
 });
+
+$("history-btn").addEventListener("click", openRecentHistory);
+$("history-close").addEventListener("click", () => $("history-dialog").close());
 
 restorePrefs();
 token = loadToken();
