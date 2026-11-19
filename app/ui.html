@@ -42,6 +42,7 @@
       <div class="toolbar">
         <h2>Cihazlar <span id="count"></span></h2>
         <div class="buttons">
+          <button id="history-btn" type="button" class="secondary">Son hareketler</button>
           <button id="csv-btn" type="button" class="secondary">CSV indir</button>
           <button id="print-btn" type="button" class="secondary">Yazdır</button>
           <button id="new-btn" type="button">Yeni cihaz</button>
@@ -138,6 +139,13 @@
     <div class="buttons">
       <button id="confirm-yes" type="button" class="danger">Evet</button>
       <button id="confirm-no" type="button" class="secondary">Vazgeç</button>
+    </div>
+  </dialog>
+  <dialog id="history-dialog">
+    <h3 id="history-title">Geçmiş</h3>
+    <ul id="history-list" class="history-list"></ul>
+    <div class="buttons">
+      <button id="history-close" type="button" class="secondary">Kapat</button>
     </div>
   </dialog>
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>

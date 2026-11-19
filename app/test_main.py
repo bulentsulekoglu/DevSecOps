@@ -23,6 +23,7 @@ def clean_state(client):
     with main.get_conn() as conn:
         conn.execute("DELETE FROM sessions")
         conn.execute("DELETE FROM devices")
+        conn.execute("DELETE FROM device_history")
 
 
 @pytest.fixture()
@@ -272,3 +273,45 @@ def test_guncelleme_yeni_alanlari_degistirir(client, auth):
     assert r.status_code == 200
     assert r.json()["serial_number"] == "SN-NEW"
     assert r.json()["notes"] == "güncellendi"
+
+
+def test_gecmis_olusturma_guncelleme_silme(client, auth):
+    body = {"name": "G", "asset_tag": "LT-9100", "device_type": "laptop", "owner": "ayse"}
+    device_id = client.post("/devices", json=body, headers=auth).json()["id"]
+    r = client.put(
+        f"/devices/{device_id}",
+        json={**body, "owner": "mehmet", "status": "in_repair"},
+        headers=auth,
+    )
+    assert r.status_code == 200
+    assert client.delete(f"/devices/{device_id}", headers=auth).status_code == 204
+    r = client.get(f"/devices/{device_id}/history", headers=auth)
+    assert r.status_code == 200
+    entries = r.json()
+    assert [e["action"] for e in entries] == ["delete", "update", "create"]
+    assert entries[1]["changes"]["owner"] == ["ayse", "mehmet"]
+    assert entries[1]["changes"]["status"] == ["active", "in_repair"]
+    assert entries[0]["username"] == ADMIN["username"]
+    assert entries[0]["asset_tag"] == "LT-9100"
+
+
+def test_degisiklik_yoksa_gecmis_eklenmez(client, auth):
+    body = {"name": "G", "asset_tag": "LT-9101", "device_type": "laptop"}
+    device_id = client.post("/devices", json=body, headers=auth).json()["id"]
+    assert client.put(f"/devices/{device_id}", json=body, headers=auth).status_code == 200
+    entries = client.get(f"/devices/{device_id}/history", headers=auth).json()
+    assert [e["action"] for e in entries] == ["create"]
+
+
+def test_son_hareketler_listesi(client, auth):
+    body = {"name": "G", "asset_tag": "LT-9102", "device_type": "laptop"}
+    client.post("/devices", json=body, headers=auth)
+    r = client.get("/history", headers=auth)
+    assert r.status_code == 200
+    assert r.json()[0]["action"] == "create"
+    assert r.json()[0]["asset_tag"] == "LT-9102"
+
+
+def test_gecmis_giris_ister(client):
+    assert client.get("/history").status_code == 401
+    assert client.get("/devices/1/history").status_code == 401

@@ -11,6 +11,7 @@ import psycopg
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
+from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 DB_URL = (
@@ -57,6 +58,17 @@ SCHEMA = [
     "ALTER TABLE devices ADD COLUMN IF NOT EXISTS warranty_until DATE",
     "CREATE UNIQUE INDEX IF NOT EXISTS devices_serial_uidx "
     "ON devices (serial_number) WHERE serial_number IS NOT NULL",
+    """CREATE TABLE IF NOT EXISTS device_history (
+        id SERIAL PRIMARY KEY,
+        device_id INTEGER NOT NULL,
+        device_name TEXT NOT NULL,
+        asset_tag TEXT NOT NULL,
+        action TEXT NOT NULL,
+        changes JSONB,
+        username TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now())""",
+    "CREATE INDEX IF NOT EXISTS device_history_device_idx "
+    "ON device_history (device_id, id DESC)",
 ]
 
 
@@ -297,6 +309,62 @@ def unique_message(exc: psycopg.errors.UniqueViolation) -> str:
     return "Bu envanter etiketi zaten kayıtlı"
 
 
+# Geçmişte izlenen alanlar (cihaz satırındaki sıra numarası: alan adı)
+HISTORY_FIELDS = {
+    1: "name",
+    2: "asset_tag",
+    3: "device_type",
+    4: "owner",
+    5: "location",
+    6: "status",
+    9: "serial_number",
+    10: "notes",
+    11: "purchase_date",
+    12: "warranty_until",
+}
+
+
+def _plain(value):
+    return None if value is None else str(value)
+
+
+def device_changes(old, new) -> dict:
+    changes = {}
+    for index, field in HISTORY_FIELDS.items():
+        if old[index] != new[index]:
+            changes[field] = [_plain(old[index]), _plain(new[index])]
+    return changes
+
+
+def record_history(conn, device_id, name, asset_tag, action, changes, username):
+    conn.execute(
+        "INSERT INTO device_history "
+        "(device_id, device_name, asset_tag, action, changes, username) "
+        "VALUES (%s, %s, %s, %s, %s, %s)",
+        (
+            device_id,
+            name,
+            asset_tag,
+            action,
+            Jsonb(changes) if changes is not None else None,
+            username,
+        ),
+    )
+
+
+def history_dict(r) -> dict:
+    return {
+        "id": r[0],
+        "device_id": r[1],
+        "device_name": r[2],
+        "asset_tag": r[3],
+        "action": r[4],
+        "changes": r[5],
+        "username": r[6],
+        "created_at": r[7],
+    }
+
+
 @app.get("/devices")
 def list_devices(
     limit: int = Query(50, ge=1, le=200),
@@ -337,6 +405,9 @@ def create_device(device: DeviceIn, user: dict = Depends(current_user)):
                     device.warranty_until,
                 ),
             ).fetchone()
+            record_history(
+                conn, row[0], row[1], row[2], "create", None, user["username"]
+            )
     except psycopg.errors.UniqueViolation as exc:
         raise HTTPException(status_code=409, detail=unique_message(exc)) from None
     return device_dict(row)
@@ -362,6 +433,12 @@ def update_device(
 ):
     try:
         with get_conn() as conn:
+            old = conn.execute(
+                "SELECT id, name, asset_tag, device_type, owner, location, status, "
+                "created_at, updated_at, serial_number, notes, purchase_date, "
+                "warranty_until FROM devices WHERE id = %s FOR UPDATE",
+                (device_id,),
+            ).fetchone()
             row = conn.execute(
                 "UPDATE devices SET name = %s, asset_tag = %s, device_type = %s, "
                 "owner = %s, location = %s, status = %s, serial_number = %s, "
@@ -385,6 +462,12 @@ def update_device(
                     device_id,
                 ),
             ).fetchone()
+            if row is not None and old is not None:
+                changes = device_changes(old, row)
+                if changes:
+                    record_history(
+                        conn, row[0], row[1], row[2], "update", changes, user["username"]
+                    )
     except psycopg.errors.UniqueViolation as exc:
         raise HTTPException(status_code=409, detail=unique_message(exc)) from None
     if row is None:
@@ -396,11 +479,51 @@ def update_device(
 def delete_device(device_id: int, user: dict = Depends(current_user)):
     with get_conn() as conn:
         row = conn.execute(
-            "DELETE FROM devices WHERE id = %s RETURNING id", (device_id,)
+            "DELETE FROM devices WHERE id = %s RETURNING id, name, asset_tag",
+            (device_id,),
         ).fetchone()
+        if row is not None:
+            record_history(
+                conn, row[0], row[1], row[2], "delete", None, user["username"]
+            )
     if row is None:
         raise HTTPException(status_code=404, detail="Cihaz bulunamadı")
     return Response(status_code=204)
+
+
+# --- Geçmiş (denetim kaydı) ---
+
+
+@app.get("/devices/{device_id}/history")
+def device_history(
+    device_id: int,
+    limit: int = Query(50, ge=1, le=200),
+    user: dict = Depends(current_user),
+):
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, device_id, device_name, asset_tag, action, changes, "
+            "username, created_at FROM device_history "
+            "WHERE device_id = %s ORDER BY id DESC LIMIT %s",
+            (device_id, limit),
+        ).fetchall()
+    return [history_dict(r) for r in rows]
+
+
+@app.get("/history")
+def recent_history(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    user: dict = Depends(current_user),
+):
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, device_id, device_name, asset_tag, action, changes, "
+            "username, created_at FROM device_history "
+            "ORDER BY id DESC LIMIT %s OFFSET %s",
+            (limit, offset),
+        ).fetchall()
+    return [history_dict(r) for r in rows]
 
 
 # --- Web arayüzü (sayfa giriş istemez, veri yine korumalı API'den gelir) ---
