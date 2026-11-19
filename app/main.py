@@ -69,6 +69,24 @@ SCHEMA = [
         created_at TIMESTAMPTZ NOT NULL DEFAULT now())""",
     "CREATE INDEX IF NOT EXISTS device_history_device_idx "
     "ON device_history (device_id, id DESC)",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT",
+    "UPDATE users SET role = 'admin' WHERE role IS NULL",
+    "ALTER TABLE users ALTER COLUMN role SET DEFAULT 'viewer'",
+    "ALTER TABLE users ALTER COLUMN role SET NOT NULL",
+    "ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check",
+    "ALTER TABLE users ADD CONSTRAINT users_role_check "
+    "CHECK (role IN ('admin', 'editor', 'viewer'))",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
+    "failed_attempts INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ",
+    """CREATE TABLE IF NOT EXISTS user_events (
+        id SERIAL PRIMARY KEY,
+        action TEXT NOT NULL,
+        target_username TEXT NOT NULL,
+        detail TEXT,
+        username TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now())""",
 ]
 
 
@@ -122,7 +140,7 @@ def bootstrap_admin(conn):
     if not password:
         raise RuntimeError("Hiç kullanıcı yok ve ADMIN_PASSWORD tanımlı değil")
     conn.execute(
-        "INSERT INTO users (username, password_hash) VALUES (%s, %s)",
+        "INSERT INTO users (username, password_hash, role) VALUES (%s, %s, 'admin')",
         (username, hash_password(password)),
     )
 
@@ -152,14 +170,26 @@ def current_user(
         raise unauthorized
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT u.id, u.username FROM sessions s "
+            "SELECT u.id, u.username, u.role FROM sessions s "
             "JOIN users u ON u.id = s.user_id "
-            "WHERE s.token_hash = %s AND s.expires_at > now()",
+            "WHERE s.token_hash = %s AND s.expires_at > now() AND u.active",
             (token_hash(creds.credentials),),
         ).fetchone()
     if row is None:
         raise unauthorized
-    return {"id": row[0], "username": row[1]}
+    return {"id": row[0], "username": row[1], "role": row[2]}
+
+
+def require_roles(*allowed: str):
+    def checker(user: dict = Depends(current_user)) -> dict:
+        if user["role"] not in allowed:
+            raise HTTPException(status_code=403, detail="Bu işlem için yetkiniz yok")
+        return user
+
+    return checker
+
+
+editor_or_admin = require_roles("admin", "editor")
 
 
 # --- Metrik ara katmanı ---
@@ -214,23 +244,44 @@ class LoginIn(BaseModel):
     password: str = Field(min_length=1, max_length=200)
 
 
+# Hata mesajı hesabın var olup olmadığını, pasif ya da kilitli olduğunu belli etmez
+LOGIN_ERROR = "Kullanıcı adı ya da parola hatalı ya da hesap geçici olarak kilitli"
+MAX_FAILED_LOGINS = 5
+LOCK_SECONDS = 300
+
+
 @app.post("/login")
 def login(body: LoginIn):
+    token = None
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT id, password_hash FROM users WHERE username = %s",
+            "SELECT id, password_hash, active, COALESCE(locked_until > now(), false) "
+            "FROM users WHERE username = %s",
             (body.username,),
         ).fetchone()
         password_ok = verify_password(body.password, row[1] if row else DUMMY_HASH)
-        if row is None or not password_ok:
-            raise HTTPException(status_code=401, detail="Kullanıcı adı ya da parola hatalı")
-        conn.execute("DELETE FROM sessions WHERE expires_at < now()")
-        token = secrets.token_urlsafe(32)
-        conn.execute(
-            "INSERT INTO sessions (token_hash, user_id, expires_at) "
-            "VALUES (%s, %s, now() + (%s::float8) * interval '1 second')",
-            (token_hash(token), row[0], float(SESSION_TTL_SECONDS)),
-        )
+        if row is not None and password_ok and row[2] and not row[3]:
+            conn.execute(
+                "UPDATE users SET failed_attempts = 0, locked_until = NULL WHERE id = %s",
+                (row[0],),
+            )
+            conn.execute("DELETE FROM sessions WHERE expires_at < now()")
+            token = secrets.token_urlsafe(32)
+            conn.execute(
+                "INSERT INTO sessions (token_hash, user_id, expires_at) "
+                "VALUES (%s, %s, now() + (%s::float8) * interval '1 second')",
+                (token_hash(token), row[0], float(SESSION_TTL_SECONDS)),
+            )
+        elif row is not None and row[2] and not row[3] and not password_ok:
+            conn.execute(
+                "UPDATE users SET failed_attempts = failed_attempts + 1, "
+                "locked_until = CASE WHEN failed_attempts + 1 >= %s "
+                "THEN now() + (%s::float8) * interval '1 second' "
+                "ELSE locked_until END WHERE id = %s",
+                (MAX_FAILED_LOGINS, float(LOCK_SECONDS), row[0]),
+            )
+    if token is None:
+        raise HTTPException(status_code=401, detail=LOGIN_ERROR)
     return {
         "access_token": token,
         "token_type": "bearer",
@@ -382,7 +433,7 @@ def list_devices(
 
 
 @app.post("/devices", status_code=201)
-def create_device(device: DeviceIn, user: dict = Depends(current_user)):
+def create_device(device: DeviceIn, user: dict = Depends(editor_or_admin)):
     try:
         with get_conn() as conn:
             row = conn.execute(
@@ -429,7 +480,7 @@ def get_device(device_id: int, user: dict = Depends(current_user)):
 
 @app.put("/devices/{device_id}")
 def update_device(
-    device_id: int, device: DeviceIn, user: dict = Depends(current_user)
+    device_id: int, device: DeviceIn, user: dict = Depends(editor_or_admin)
 ):
     try:
         with get_conn() as conn:
@@ -476,7 +527,7 @@ def update_device(
 
 
 @app.delete("/devices/{device_id}", status_code=204)
-def delete_device(device_id: int, user: dict = Depends(current_user)):
+def delete_device(device_id: int, user: dict = Depends(editor_or_admin)):
     with get_conn() as conn:
         row = conn.execute(
             "DELETE FROM devices WHERE id = %s RETURNING id, name, asset_tag",
@@ -489,6 +540,208 @@ def delete_device(device_id: int, user: dict = Depends(current_user)):
     if row is None:
         raise HTTPException(status_code=404, detail="Cihaz bulunamadı")
     return Response(status_code=204)
+
+
+@app.get("/me")
+def me(user: dict = Depends(current_user)):
+    return {"username": user["username"], "role": user["role"]}
+
+
+# --- Kullanıcı yönetimi (yalnızca yönetici) ve parola değiştirme ---
+ROLES = ("admin", "editor", "viewer")
+admin_only = require_roles("admin")
+MIN_PASSWORD = 12
+
+
+def check_password_strength(password: str) -> str:
+    if len(password) < MIN_PASSWORD:
+        raise ValueError(f"Parola en az {MIN_PASSWORD} karakter olmalı")
+    return password
+
+
+class UserIn(BaseModel):
+    username: str = Field(min_length=3, max_length=50, pattern=r"^[A-Za-z0-9._-]+$")
+    password: str = Field(max_length=200)
+    role: Literal["admin", "editor", "viewer"]
+
+    @field_validator("password")
+    @classmethod
+    def strong(cls, v: str) -> str:
+        return check_password_strength(v)
+
+
+class UserUpdate(BaseModel):
+    role: Literal["admin", "editor", "viewer"]
+    active: bool
+
+
+class PasswordReset(BaseModel):
+    new_password: str = Field(max_length=200)
+
+    @field_validator("new_password")
+    @classmethod
+    def strong(cls, v: str) -> str:
+        return check_password_strength(v)
+
+
+class PasswordChange(BaseModel):
+    old_password: str = Field(min_length=1, max_length=200)
+    new_password: str = Field(max_length=200)
+
+    @field_validator("new_password")
+    @classmethod
+    def strong(cls, v: str) -> str:
+        return check_password_strength(v)
+
+
+def record_user_event(conn, action, target, detail, actor):
+    conn.execute(
+        "INSERT INTO user_events (action, target_username, detail, username) "
+        "VALUES (%s, %s, %s, %s)",
+        (action, target, detail, actor),
+    )
+
+
+def user_dict(r):
+    return {
+        "id": r[0],
+        "username": r[1],
+        "role": r[2],
+        "active": r[3],
+        "locked": bool(r[4]),
+    }
+
+
+@app.get("/users")
+def list_users(user: dict = Depends(admin_only)):
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, username, role, active, COALESCE(locked_until > now(), false) "
+            "FROM users ORDER BY id"
+        ).fetchall()
+    return [user_dict(r) for r in rows]
+
+
+@app.post("/users", status_code=201)
+def create_user(body: UserIn, user: dict = Depends(admin_only)):
+    with get_conn() as conn:
+        try:
+            row = conn.execute(
+                "INSERT INTO users (username, password_hash, role) VALUES (%s, %s, %s) "
+                "RETURNING id, username, role, active, false",
+                (body.username, hash_password(body.password), body.role),
+            ).fetchone()
+        except psycopg.errors.UniqueViolation:
+            raise HTTPException(
+                status_code=409, detail="Bu kullanıcı adı zaten var"
+            ) from None
+        record_user_event(conn, "create", body.username, "rol: " + body.role, user["username"])
+    return user_dict(row)
+
+
+@app.put("/users/{user_id}")
+def update_user(user_id: int, body: UserUpdate, user: dict = Depends(admin_only)):
+    with get_conn() as conn:
+        # Yönetici sayısını güvenle denetlemek için tüm yöneticileri kilitle
+        conn.execute("SELECT id FROM users WHERE role = 'admin' FOR UPDATE")
+        old = conn.execute(
+            "SELECT username, role, active FROM users WHERE id = %s", (user_id,)
+        ).fetchone()
+        if old is None:
+            raise HTTPException(status_code=404, detail="Kullanıcı bulunamadı")
+        was_active_admin = old[1] == "admin" and old[2]
+        stays_active_admin = body.role == "admin" and body.active
+        if was_active_admin and not stays_active_admin:
+            others = conn.execute(
+                "SELECT count(*) FROM users WHERE role = 'admin' AND active AND id <> %s",
+                (user_id,),
+            ).fetchone()[0]
+            if others == 0:
+                raise HTTPException(
+                    status_code=409, detail="Son etkin yönetici değiştirilemez"
+                )
+        row = conn.execute(
+            "UPDATE users SET role = %s, active = %s WHERE id = %s "
+            "RETURNING id, username, role, active, COALESCE(locked_until > now(), false)",
+            (body.role, body.active, user_id),
+        ).fetchone()
+        if not body.active:
+            conn.execute("DELETE FROM sessions WHERE user_id = %s", (user_id,))
+        elif old[1] != body.role:
+            conn.execute("DELETE FROM sessions WHERE user_id = %s", (user_id,))
+        if old[1] != body.role:
+            record_user_event(
+                conn, "role", old[0], old[1] + " -> " + body.role, user["username"]
+            )
+        if old[2] != body.active:
+            record_user_event(
+                conn, "activate" if body.active else "deactivate", old[0], None,
+                user["username"],
+            )
+    return user_dict(row)
+
+
+@app.post("/users/{user_id}/password", status_code=204)
+def reset_password(user_id: int, body: PasswordReset, user: dict = Depends(admin_only)):
+    with get_conn() as conn:
+        row = conn.execute(
+            "UPDATE users SET password_hash = %s, failed_attempts = 0, locked_until = NULL "
+            "WHERE id = %s RETURNING username",
+            (hash_password(body.new_password), user_id),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Kullanıcı bulunamadı")
+        conn.execute("DELETE FROM sessions WHERE user_id = %s", (user_id,))
+        record_user_event(conn, "password_reset", row[0], None, user["username"])
+    return Response(status_code=204)
+
+
+@app.post("/me/password", status_code=204)
+def change_own_password(
+    body: PasswordChange,
+    user: dict = Depends(current_user),
+    creds: HTTPAuthorizationCredentials = Depends(bearer),
+):
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT password_hash FROM users WHERE id = %s", (user["id"],)
+        ).fetchone()
+        if not verify_password(body.old_password, row[0]):
+            raise HTTPException(status_code=403, detail="Eski parola hatalı")
+        conn.execute(
+            "UPDATE users SET password_hash = %s WHERE id = %s",
+            (hash_password(body.new_password), user["id"]),
+        )
+        # Bu oturum açık kalır, diğer tüm oturumlar kapanır
+        conn.execute(
+            "DELETE FROM sessions WHERE user_id = %s AND token_hash <> %s",
+            (user["id"], token_hash(creds.credentials)),
+        )
+        record_user_event(conn, "password_change", user["username"], None, user["username"])
+    return Response(status_code=204)
+
+
+@app.get("/user-events")
+def recent_user_events(
+    limit: int = Query(50, ge=1, le=200), user: dict = Depends(admin_only)
+):
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, action, target_username, detail, username, created_at "
+            "FROM user_events ORDER BY id DESC LIMIT %s",
+            (limit,),
+        ).fetchall()
+    return [
+        {
+            "id": r[0],
+            "action": r[1],
+            "target": r[2],
+            "detail": r[3],
+            "username": r[4],
+            "created_at": r[5].isoformat(),
+        }
+        for r in rows
+    ]
 
 
 # --- Geçmiş (denetim kaydı) ---
