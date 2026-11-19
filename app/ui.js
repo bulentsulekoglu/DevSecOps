@@ -2,8 +2,9 @@
 
 const $ = (id) => document.getElementById(id);
 const STATUS = { active: "Kullanımda", in_repair: "Tamirde", retired: "Emekli" };
-const FIELDS = ["name", "asset_tag", "device_type", "owner", "location"];
-const SORT_KEYS = ["id", "name", "asset_tag", "device_type", "owner", "location", "status"];
+const FIELDS = ["name", "asset_tag", "device_type", "owner", "location", "serial_number", "notes"];
+const SORT_KEYS = ["id", "name", "asset_tag", "device_type", "owner", "location", "status",
+  "serial_number", "warranty_until"];
 const PREF_KEY = "ui-prefs";
 let token = null;
 let editingId = null;
@@ -12,7 +13,7 @@ let visibleDevices = [];
 let pendingType = "";
 let toastTimer = null;
 const selected = new Set();
-const view = { mode: "list", sortKey: "id", sortDir: 1 };
+const view = { mode: "list", sortKey: "id", sortDir: 1, warrantySoon: false };
 
 // --- Tarayıcı depolaması (engellenmiş olabilir, her yerde try/catch) ---
 
@@ -91,11 +92,12 @@ function signOut() {
 
 // --- Süzme, sıralama, gruplama, CSV (saf fonksiyonlar) ---
 
-function filterDevices(devices, query, status, type) {
+function filterDevices(devices, query, status, type, warrantySoon, today) {
   const q = (query || "").trim().toLowerCase();
   return devices.filter((d) => {
     if (status && d.status !== status) return false;
     if (type && d.device_type !== type) return false;
+    if (warrantySoon && warrantyState(d, today) !== "soon") return false;
     if (!q) return true;
     return FIELDS.some((f) => (d[f] || "").toLowerCase().includes(q));
   });
@@ -135,6 +137,20 @@ function countByStatus(devices) {
   return counts;
 }
 
+// Garanti durumu: "expired" (bitmiş), "soon" (30 gün içinde bitecek), "ok", boş (tarih yok ya da emekli)
+function warrantyState(device, today) {
+  if (!device.warranty_until || device.status === "retired") return "";
+  const days = Math.round((Date.parse(device.warranty_until) - Date.parse(today)) / 86400000);
+  if (days < 0) return "expired";
+  if (days <= 30) return "soon";
+  return "ok";
+}
+
+function todayIso() {
+  const d = new Date();
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+}
+
 // Excel'de formül olarak çalışabilecek hücreler (=, +, -, @ ile başlayanlar) başına ' konur.
 function csvCell(value) {
   let s = value === null || value === undefined ? "" : String(value);
@@ -144,12 +160,14 @@ function csvCell(value) {
 }
 
 function toCsv(devices) {
-  const header = ["ID", "Ad", "Demirbaş etiketi", "Tür", "Sahibi", "Konum", "Durum", "Oluşturulma", "Güncellenme"];
+  const header = ["ID", "Ad", "Demirbaş etiketi", "Tür", "Sahibi", "Konum", "Durum", "Oluşturulma", "Güncellenme",
+    "Seri numarası", "Satın alma tarihi", "Garanti bitişi", "Not"];
   const lines = [header.map(csvCell).join(";")];
   for (const d of devices) {
     lines.push([
       d.id, d.name, d.asset_tag, d.device_type, d.owner, d.location,
       STATUS[d.status] || d.status, d.created_at, d.updated_at,
+      d.serial_number, d.purchase_date, d.warranty_until, d.notes,
     ].map(csvCell).join(";"));
   }
   return lines.join("\r\n");
@@ -163,6 +181,10 @@ function bulkBody(device, changes) {
     owner: device.owner || null,
     location: device.location || null,
     status: device.status,
+    serial_number: device.serial_number || null,
+    notes: device.notes || null,
+    purchase_date: device.purchase_date || null,
+    warranty_until: device.warranty_until || null,
     ...changes,
   };
 }
@@ -207,13 +229,24 @@ function selectCell(device) {
   return td;
 }
 
+function warrantyCell(device) {
+  const td = cell(device.warranty_until);
+  const state = warrantyState(device, todayIso());
+  if (state === "soon") td.className = "cell-soon";
+  if (state === "expired") td.className = "cell-expired";
+  return td;
+}
+
 function renderRows(devices) {
   const rows = $("rows");
   rows.replaceChildren();
   for (const d of devices) {
     const tr = document.createElement("tr");
     tr.append(selectCell(d));
-    tr.append(cell(d.name), cell(d.asset_tag), cell(d.device_type), cell(d.owner), cell(d.location));
+    tr.append(
+      cell(d.name), cell(d.asset_tag), cell(d.serial_number), cell(d.device_type),
+      cell(d.owner), cell(d.location), warrantyCell(d),
+    );
     const statusCell = document.createElement("td");
     statusCell.append(statusBadge(d.status));
     const actions = document.createElement("td");
@@ -249,7 +282,7 @@ function renderOwners(devices) {
       itemName.textContent = d.name;
       const meta = document.createElement("span");
       meta.className = "meta";
-      meta.textContent = d.asset_tag + " · " + d.device_type;
+      meta.textContent = d.asset_tag + " · " + d.device_type + (d.serial_number ? " · SN " + d.serial_number : "");
       info.append(itemName, meta);
       li.append(info, statusBadge(d.status), button("Düzenle", "secondary", () => openForm(d)));
       list.append(li);
@@ -265,6 +298,8 @@ function renderStats(devices) {
   $("s-active").textContent = String(counts.active);
   $("s-in_repair").textContent = String(counts.in_repair);
   $("s-retired").textContent = String(counts.retired);
+  const today = todayIso();
+  $("s-warranty").textContent = String(devices.filter((d) => warrantyState(d, today) === "soon").length);
 }
 
 function refreshTypeFilter(devices) {
@@ -309,7 +344,10 @@ function render() {
   }
   renderStats(allDevices);
   refreshTypeFilter(allDevices);
-  const filtered = filterDevices(allDevices, $("search").value, $("filter-status").value, $("filter-type").value);
+  const filtered = filterDevices(
+    allDevices, $("search").value, $("filter-status").value, $("filter-type").value,
+    view.warrantySoon, todayIso(),
+  );
   visibleDevices = sortDevices(filtered, view.sortKey, view.sortDir);
   const filtering = filtered.length !== allDevices.length;
   $("count").textContent = "(" + (filtering ? filtered.length + " / " + allDevices.length : allDevices.length) + ")";
@@ -373,6 +411,10 @@ function openForm(device) {
   $("f-owner").value = device && device.owner ? device.owner : "";
   $("f-location").value = device && device.location ? device.location : "";
   $("f-status").value = device ? device.status : "active";
+  $("f-serial").value = device && device.serial_number ? device.serial_number : "";
+  $("f-purchase").value = device && device.purchase_date ? device.purchase_date : "";
+  $("f-warranty").value = device && device.warranty_until ? device.warranty_until : "";
+  $("f-notes").value = device && device.notes ? device.notes : "";
   $("form-error").textContent = "";
   $("device-form").hidden = false;
   $("f-name").focus();
@@ -521,7 +563,12 @@ for (const b of document.querySelectorAll(".th-btn")) {
 
 for (const card of document.querySelectorAll(".stat")) {
   card.addEventListener("click", () => {
-    $("filter-status").value = card.dataset.filter;
+    if (card.dataset.warranty) {
+      view.warrantySoon = !view.warrantySoon;
+    } else {
+      view.warrantySoon = false;
+      $("filter-status").value = card.dataset.filter;
+    }
     render();
   });
 }
@@ -537,6 +584,10 @@ $("device-form").addEventListener("submit", async (event) => {
     owner: $("f-owner").value || null,
     location: $("f-location").value || null,
     status: $("f-status").value,
+    serial_number: $("f-serial").value || null,
+    notes: $("f-notes").value || null,
+    purchase_date: $("f-purchase").value || null,
+    warranty_until: $("f-warranty").value || null,
   });
   try {
     if (isNew) await api("/devices", { method: "POST", body });
