@@ -43,6 +43,20 @@ jobs:
       - name: Testler (geçici PostgreSQL ile)
         run: bash scripts/run-tests.sh
 
+      - name: Depo Stok - Lint (ruff)
+        run: |
+          docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
+            -v "$PWD/depo:/app" -w /app python:3.12-slim \
+            sh -c "python -m venv /tmp/venv && /tmp/venv/bin/pip install -q -r requirements-dev.txt && /tmp/venv/bin/ruff check --no-cache ."
+
+      - name: Depo Stok - Testler (geçici PostgreSQL ile)
+        run: bash scripts/run-tests.sh depo
+
+      - name: Depo Stok - İmaj build denemesi
+        run: |
+          docker build -q -t depo-ci-check ./depo >/dev/null
+          docker rmi depo-ci-check >/dev/null
+
   secret-scan:
     runs-on: [self-hosted, linux]
     steps:
@@ -261,6 +275,165 @@ jobs:
           GHCR_USER: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IMAGE: ${{ needs.build-push.outputs.image }}
+        run: |
+          bash scripts/verify-image.sh "$IMAGE"
+
+  build-push-depo:
+    needs: [lint-test, secret-scan, sast, dependency-scan]
+    outputs:
+      image: ${{ steps.digest.outputs.image }}
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, linux]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - name: Kodu indir
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: GitHub Container Registry'ye giriş
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: İmajı build et
+        run: |
+          IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}-depo
+          docker build --pull \
+            --build-arg APP_VERSION="${GITHUB_SHA::7}" \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            -t "$IMAGE:${GITHUB_SHA::7}" ./depo
+
+      - name: İmajı Trivy ile tara (engelleyen)
+        run: |
+          IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}-depo
+          mkdir -p "$HOME/.cache/trivy"
+          docker save "$IMAGE:${GITHUB_SHA::7}" -o "$RUNNER_TEMP/image.tar"
+          docker run --rm -u "$(id -u):$(id -g)" \
+            -e TRIVY_CACHE_DIR=/cache \
+            -v "$HOME/.cache/trivy:/cache" \
+            -v "$RUNNER_TEMP:/scan:ro" \
+            "$TRIVY_IMAGE" \
+            image --input /scan/image.tar --severity "$BLOCK_SEVERITY" \
+              --ignore-unfixed --no-progress --exit-code 1
+
+      - name: İmaj MEDIUM raporu (engellemez)
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/image.tar" ]; then
+            docker run --rm -u "$(id -u):$(id -g)" \
+              -e TRIVY_CACHE_DIR=/cache \
+              -v "$HOME/.cache/trivy:/cache" \
+              -v "$RUNNER_TEMP:/scan:ro" \
+              "$TRIVY_IMAGE" \
+              image --input /scan/image.tar --severity "$REPORT_SEVERITY" \
+                --ignore-unfixed --no-progress --exit-code 0
+          fi
+
+      - name: SBOM üret (CycloneDX)
+        run: |
+          mkdir -p "$RUNNER_TEMP/sbom"
+          docker run --rm -u "$(id -u):$(id -g)" \
+            -e TRIVY_CACHE_DIR=/cache \
+            -v "$HOME/.cache/trivy:/cache" \
+            -v "$RUNNER_TEMP:/scan:ro" \
+            -v "$RUNNER_TEMP/sbom:/out" \
+            "$TRIVY_IMAGE" \
+            image --input /scan/image.tar --format cyclonedx --no-progress \
+              --output "/out/sbom-${GITHUB_SHA::7}.cdx.json"
+
+      - name: SBOM doğrula
+        run: |
+          python3 - <<'PY'
+          import glob, json, os, sys
+          files = glob.glob(os.environ["RUNNER_TEMP"] + "/sbom/*.cdx.json")
+          if not files:
+              sys.exit("SBOM dosyası üretilmemiş")
+          d = json.load(open(files[0]))
+          comps = d.get("components", [])
+          libs = [c for c in comps if c.get("type") == "library"]
+          print("Format:", d.get("bomFormat"), d.get("specVersion"))
+          print("Toplam bileşen:", len(comps), "| kütüphane:", len(libs))
+          names = {c.get("name") for c in libs}
+          for need in ("fastapi", "starlette"):
+              if need not in names:
+                  sys.exit("SBOM'da beklenen paket yok: " + need)
+          print("SBOM doğrulandı")
+          PY
+
+      - name: İmajı registry'ye gönder
+        run: |
+          IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}-depo
+          docker push "$IMAGE:${GITHUB_SHA::7}"
+
+      - name: İmaj digest'ini al
+        id: digest
+        run: |
+          IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}-depo
+          REF=$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$IMAGE:${GITHUB_SHA::7}" | grep "^$IMAGE@sha256:" | head -n1 || true)
+          if [ -z "$REF" ]; then
+            echo "Yayınlanan imajın digest'i bulunamadı" >&2
+            exit 1
+          fi
+          echo "Yayınlanan imaj: $REF"
+          echo "Yayınlanan imaj: $REF" >> "$GITHUB_STEP_SUMMARY"
+          echo "image=$REF" >> "$GITHUB_OUTPUT"
+
+      - name: İmajı Cosign ile imzala (anahtarsız)
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_REF: ${{ steps.digest.outputs.image }}
+        run: |
+          # Runner'ın kendi docker ayarını konteynere vermeyiz, yalnızca bu iş için geçici bir giriş açarız
+          CFG="$(mktemp -d)"
+          trap 'rm -rf "$CFG"' EXIT
+          echo "$GHCR_TOKEN" | DOCKER_CONFIG="$CFG" docker login ghcr.io -u "$GHCR_USER" --password-stdin >/dev/null
+          docker run --rm -u "$(id -u):$(id -g)" \
+            -e HOME=/tmp -e DOCKER_CONFIG=/dockercfg \
+            -e GITHUB_ACTIONS \
+            -e ACTIONS_ID_TOKEN_REQUEST_URL \
+            -e ACTIONS_ID_TOKEN_REQUEST_TOKEN \
+            -v "$CFG:/dockercfg:ro" \
+            "$COSIGN_IMAGE" sign --yes "$IMAGE_REF"
+          echo "İmzalandı: $IMAGE_REF" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: SBOM'u arşivle
+        uses: actions/upload-artifact@v6
+        with:
+          name: sbom-depo-${{ github.sha }}
+          path: ${{ runner.temp }}/sbom/
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Geçici dosyaları ve oturumu temizle
+        if: always()
+        run: |
+          rm -rf "$RUNNER_TEMP/image.tar" "$RUNNER_TEMP/sbom"
+          docker logout ghcr.io
+
+  verify-image-depo:
+    needs: build-push-depo
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, linux]
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Kodu indir
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: İmza doğrula (Cosign)
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ${{ needs.build-push-depo.outputs.image }}
         run: |
           bash scripts/verify-image.sh "$IMAGE"
 

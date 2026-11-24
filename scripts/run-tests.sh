@@ -4,6 +4,10 @@ set -euo pipefail
 # Geçici bir PostgreSQL konteyneriyle testleri çalıştırır (CI ve yerel kullanım aynı betiği kullanır).
 cd "$(dirname "$0")/.."
 
+# Kullanım: scripts/run-tests.sh [uygulama-klasörü]   (varsayılan: app)
+APP_DIR="${1:-app}"
+[[ "$APP_DIR" =~ ^[a-z]+$ && -d "$APP_DIR" ]] || { echo "Geçersiz uygulama klasörü: $APP_DIR" >&2; exit 1; }
+
 SUFFIX="${GITHUB_RUN_ID:-local}-$$"
 NET="testnet-$SUFFIX"
 DB="testdb-$SUFFIX"
@@ -33,5 +37,5 @@ done
 docker run --rm -u "$(id -u):$(id -g)" --network "$NET" \
   -e HOME=/tmp -e PYTHONDONTWRITEBYTECODE=1 \
   -e POSTGRES_HOST="$DB" -e POSTGRES_USER=test -e POSTGRES_PASSWORD=test -e POSTGRES_DB=test \
-  -v "$PWD/app:/app" -w /app python:3.12-slim \
+  -v "$PWD/$APP_DIR:/app" -w /app python:3.12-slim \
   sh -c "python -m venv /tmp/venv && /tmp/venv/bin/pip install -q -r requirements-dev.txt && /tmp/venv/bin/pytest -v -p no:cacheprovider"
