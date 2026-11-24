@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Depo Stok</title>
+  <link rel="stylesheet" href="/ui.css">
+</head>
+<body>
+  <header>
+    <h1>Depo Stok</h1>
+    <span class="who">Kullanıcı: <b id="who">-</b></span>
+  </header>
+
+  <main>
+    <section class="cards" aria-label="Özet">
+      <div class="card"><span id="c-products">-</span><small>Ürün çeşidi</small></div>
+      <div class="card"><span id="c-units">-</span><small>Toplam adet</small></div>
+      <div class="card warn"><span id="c-low">-</span><small>Kritik stok</small></div>
+      <div class="card bad"><span id="c-empty">-</span><small>Tükenen</small></div>
+    </section>
+
+    <section class="toolbar">
+      <input id="q" type="search" placeholder="Ara: ad, kod, barkod, kategori, konum" autocomplete="off" autofocus>
+      <select id="cat"><option value="">Tüm kategoriler</option></select>
+      <label class="chk"><input id="low" type="checkbox"> Yalnızca kritik</label>
+      <button id="new-btn" type="button">Yeni ürün</button>
+      <a class="btn" href="/api/export.csv">CSV indir</a>
+    </section>
+
+    <p id="msg" role="status"></p>
+
+    <table>
+      <thead>
+        <tr><th>Ürün</th><th>Kod</th><th>Kategori</th><th>Konum</th><th class="num">Miktar</th><th class="num">Minimum</th><th>İşlem</th></tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="pager">
+      <button id="prev" type="button">Önceki</button>
+      <span id="page-info"></span>
+      <button id="next" type="button">Sonraki</button>
+    </div>
+
+    <section id="panel" class="panel" hidden>
+      <h2 id="panel-title"></h2>
+      <form id="form" autocomplete="off"></form>
+      <div id="history"></div>
+      <button id="panel-close" type="button">Kapat</button>
+    </section>
+  </main>
+
+  <script src="/ui.js" defer></script>
+</body>
+</html>
