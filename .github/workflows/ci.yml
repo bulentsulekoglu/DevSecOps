@@ -542,3 +542,110 @@ jobs:
           IMAGE: ${{ needs.build-push.outputs.image }}
         run: |
           bash scripts/rollback.sh production "$IMAGE" "${GITHUB_SHA::7}"
+
+  deploy-staging-depo:
+    needs: [build-push-depo, verify-image-depo]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, linux]
+    environment: staging
+    concurrency:
+      group: deploy-staging-depo
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Kodu indir
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Staging'e dağıt (digest ile)
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ${{ needs.build-push-depo.outputs.image }}
+        run: |
+          APP=depo bash scripts/deploy.sh staging "$IMAGE" "${GITHUB_SHA::7}"
+
+      - name: Smoke test
+        env:
+          IMAGE: ${{ needs.build-push-depo.outputs.image }}
+        run: |
+          HOST=$(ssh -G staging | awk '/^hostname /{print $2}')
+          SMOKE_SSH_HOST=staging EXPECTED_VERSION="${GITHUB_SHA::7}" EXPECTED_IMAGE="$IMAGE" bash scripts/smoke-test-depo.sh "$HOST"
+
+      - name: Sürümü onayla
+        env:
+          IMAGE: ${{ needs.build-push-depo.outputs.image }}
+        run: |
+          APP=depo bash scripts/promote.sh staging "$IMAGE" "${GITHUB_SHA::7}"
+
+      - name: Hata durumunda staging durumunu göster
+        if: failure()
+        run: |
+          ssh -o BatchMode=yes staging 'docker ps -a --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"; for c in $(docker ps -aq --filter label=com.docker.compose.project=depo); do echo "--- $(docker inspect --format "{{.Name}}" $c) ---"; docker logs --tail 30 $c 2>&1; done' || true
+
+      - name: Başarısız yayını geri al
+        if: failure()
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ${{ needs.build-push-depo.outputs.image }}
+        run: |
+          APP=depo bash scripts/rollback.sh staging "$IMAGE" "${GITHUB_SHA::7}"
+
+
+  deploy-production-depo:
+    needs: [build-push-depo, verify-image-depo, deploy-staging-depo]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, linux]
+    environment: production
+    concurrency:
+      group: deploy-production-depo
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: read
+    env:
+      SMOKE_WRITE: "0"
+    steps:
+      - name: Kodu indir
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Production'a dağıt (digest ile)
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ${{ needs.build-push-depo.outputs.image }}
+        run: |
+          APP=depo bash scripts/deploy.sh production "$IMAGE" "${GITHUB_SHA::7}"
+
+      - name: Smoke test
+        env:
+          IMAGE: ${{ needs.build-push-depo.outputs.image }}
+        run: |
+          HOST=$(ssh -G production | awk '/^hostname /{print $2}')
+          SMOKE_SSH_HOST=production EXPECTED_VERSION="${GITHUB_SHA::7}" EXPECTED_IMAGE="$IMAGE" bash scripts/smoke-test-depo.sh "$HOST"
+
+      - name: Sürümü onayla
+        env:
+          IMAGE: ${{ needs.build-push-depo.outputs.image }}
+        run: |
+          APP=depo bash scripts/promote.sh production "$IMAGE" "${GITHUB_SHA::7}"
+
+      - name: Hata durumunda production durumunu göster
+        if: failure()
+        run: |
+          ssh -o BatchMode=yes production 'docker ps -a --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"; for c in $(docker ps -aq --filter label=com.docker.compose.project=depo); do echo "--- $(docker inspect --format "{{.Name}}" $c) ---"; docker logs --tail 30 $c 2>&1; done' || true
+
+      - name: Başarısız yayını geri al
+        if: failure()
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ${{ needs.build-push-depo.outputs.image }}
+        run: |
+          APP=depo bash scripts/rollback.sh production "$IMAGE" "${GITHUB_SHA::7}"
