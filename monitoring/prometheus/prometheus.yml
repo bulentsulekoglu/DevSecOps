@@ -44,6 +44,15 @@ scrape_configs:
     file_sd_configs:
       - files: ['/etc/prometheus/targets/app.yml']
 
+  # Depo Stok metrikleri: nginx :9443 üzerinden /metrics (yalnızca Prometheus'un adresine açık)
+  - job_name: depo
+    scheme: https
+    metrics_path: /metrics
+    tls_config:
+      insecure_skip_verify: true  # self-signed sertifika
+    file_sd_configs:
+      - files: ['/etc/prometheus/targets/depo.yml']
+
   - job_name: alertmanager
     static_configs:
       - targets: ['alertmanager:9093']

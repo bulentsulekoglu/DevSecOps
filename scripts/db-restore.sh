@@ -2,12 +2,16 @@
 set -euo pipefail
 
 # PostgreSQL geri yükleme. Kullanım: scripts/db-restore.sh <yedek.sql.gz> [--yes]
+# Depo Stok için: BACKUP_PROJECT=depo scripts/db-restore.sh ~/backups/depodb-....sql.gz
 FILE="${1:?yedek dosyası gerekli (ör. ~/backups/appdb-....sql.gz)}"
 ASSUME_YES="${2:-}"
 BACKUP_DIR="${BACKUP_DIR:-$HOME/backups}"
+PROJECT="${BACKUP_PROJECT:-myapp}"
+PRE_PREFIX=pre-restore
+[ "$PROJECT" = "myapp" ] || PRE_PREFIX="pre-restore-$PROJECT"
 
 container() {
-  docker ps -q --filter label=com.docker.compose.project=myapp \
+  docker ps -q --filter label=com.docker.compose.project="$PROJECT" \
     --filter label=com.docker.compose.service="$1"
 }
 DB=$(container db)
@@ -30,7 +34,7 @@ if [ "$ASSUME_YES" != "--yes" ]; then
 fi
 
 echo ">> Geri yüklemeden önce güvenlik yedeği alınıyor"
-BACKUP_DIR="$BACKUP_DIR" BACKUP_PREFIX=pre-restore bash "$(dirname "$0")/db-backup.sh"
+BACKUP_DIR="$BACKUP_DIR" BACKUP_PROJECT="$PROJECT" BACKUP_PREFIX="$PRE_PREFIX" bash "$(dirname "$0")/db-backup.sh"
 
 if [ -n "$APP" ]; then
   echo ">> Uygulama durduruluyor"

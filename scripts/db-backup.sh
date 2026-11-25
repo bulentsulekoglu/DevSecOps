@@ -2,13 +2,15 @@
 set -euo pipefail
 
 # PostgreSQL yedeği: konteynerde pg_dump, sıkıştırma, doğrulama, sha256 ve eski yedeklerin temizliği.
-# Ayarlar (ortam değişkeni): BACKUP_DIR, RETENTION_DAYS, BACKUP_PREFIX
+# Ayarlar (ortam değişkeni): BACKUP_DIR, RETENTION_DAYS, BACKUP_PREFIX, BACKUP_PROJECT
+# BACKUP_PROJECT: yedeklenecek Compose projesi (varsayılan myapp; Depo Stok için depo)
 BACKUP_DIR="${BACKUP_DIR:-$HOME/backups}"
 RETENTION_DAYS="${RETENTION_DAYS:-14}"
 PREFIX="${BACKUP_PREFIX:-appdb}"
+PROJECT="${BACKUP_PROJECT:-myapp}"
 
-DB=$(docker ps -q --filter label=com.docker.compose.project=myapp --filter label=com.docker.compose.service=db)
-[ -n "$DB" ] || { echo "db konteyneri çalışmıyor, yedek alınamadı" >&2; exit 1; }
+DB=$(docker ps -q --filter label=com.docker.compose.project="$PROJECT" --filter label=com.docker.compose.service=db)
+[ -n "$DB" ] || { echo "$PROJECT: db konteyneri çalışmıyor, yedek alınamadı" >&2; exit 1; }
 
 umask 077
 mkdir -p "$BACKUP_DIR"

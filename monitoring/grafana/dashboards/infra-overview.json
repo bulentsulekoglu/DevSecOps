@@ -76,7 +76,7 @@
             "uid": "prometheus"
           },
           "expr": "probe_success{job=\"blackbox-http\"}",
-          "legendFormat": "{{env}}"
+          "legendFormat": "{{env}} {{app}}"
         }
       ]
     },
@@ -277,7 +277,7 @@
             "uid": "prometheus"
           },
           "expr": "probe_duration_seconds{job=\"blackbox-http\"}",
-          "legendFormat": "{{env}}"
+          "legendFormat": "{{env}} {{app}}"
         }
       ]
     }

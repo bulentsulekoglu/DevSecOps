@@ -66,7 +66,7 @@
             "uid": "prometheus"
           },
           "expr": "(time() - backup_latest_timestamp_seconds) / 3600",
-          "legendFormat": "{{env}}"
+          "legendFormat": "{{env}} {{app}}"
         }
       ]
     },
@@ -133,7 +133,7 @@
             "uid": "prometheus"
           },
           "expr": "backup_verify_success",
-          "legendFormat": "{{env}}"
+          "legendFormat": "{{env}} {{app}}"
         }
       ]
     },
@@ -190,7 +190,7 @@
             "uid": "prometheus"
           },
           "expr": "(time() - backup_verify_last_run_timestamp_seconds) / 3600",
-          "legendFormat": "{{env}}"
+          "legendFormat": "{{env}} {{app}}"
         }
       ]
     },
@@ -230,7 +230,7 @@
             "uid": "prometheus"
           },
           "expr": "backup_files",
-          "legendFormat": "{{env}}"
+          "legendFormat": "{{env}} {{app}}"
         }
       ]
     },
@@ -262,7 +262,7 @@
             "uid": "prometheus"
           },
           "expr": "backup_latest_size_bytes",
-          "legendFormat": "{{env}}"
+          "legendFormat": "{{env}} {{app}}"
         }
       ]
     }
