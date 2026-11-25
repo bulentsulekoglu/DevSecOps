@@ -380,3 +380,164 @@ def test_init_schema_gives_up_after_attempts(monkeypatch):
     with pytest.raises(psycopg.OperationalError):
         main.init_schema(attempts=3, delay=0)
     assert state["left"] == 96
+
+
+# ---------- Son hareketi geri al ----------
+def undo(client, pid, mid):
+    return client.post(f"/api/products/{pid}/movements/{mid}/undo")
+
+
+def test_undo_last_movement_restores_stock_and_keeps_history(client):
+    p = make(client, quantity=5)
+    m = move(client, p["id"], "in", 3).json()
+    res = undo(client, p["id"], m["id"])
+    assert res.status_code == 201
+    body = res.json()
+    assert body["delta"] == -3 and body["kind"] == "out" and body["undoes"] == m["id"]
+    assert client.get(f"/api/products/{p['id']}").json()["quantity"] == 5
+    hist = client.get(f"/api/products/{p['id']}/movements").json()
+    assert len(hist) == 3 and hist[0]["undoes"] == m["id"]
+
+
+def test_undo_an_out_movement_adds_stock_back(client):
+    p = make(client, quantity=5)
+    m = move(client, p["id"], "out", 2).json()
+    assert undo(client, p["id"], m["id"]).json()["kind"] == "in"
+    assert client.get(f"/api/products/{p['id']}").json()["quantity"] == 5
+
+
+def test_undo_only_works_on_latest_movement(client):
+    p = make(client, quantity=1)
+    first = move(client, p["id"], "in", 1).json()
+    move(client, p["id"], "in", 1)
+    assert undo(client, p["id"], first["id"]).status_code == 409
+    assert client.get(f"/api/products/{p['id']}").json()["quantity"] == 3
+
+
+def test_undo_cannot_be_undone_again(client):
+    p = make(client, quantity=1)
+    m = move(client, p["id"], "in", 1).json()
+    u = undo(client, p["id"], m["id"]).json()
+    assert undo(client, p["id"], u["id"]).status_code == 409
+    assert undo(client, p["id"], m["id"]).status_code == 409
+
+
+def test_undo_unknown_and_requires_user(client):
+    assert undo(client, 99999, 1).status_code == 404
+    p = make(client, quantity=1)
+    client.headers.pop("X-Remote-User")
+    assert undo(client, p["id"], 1).status_code == 401
+
+
+# ---------- CSV içe aktarma ----------
+def test_import_creates_products_with_opening_stock(client):
+    rows = [
+        {"sku": "i-1", "name": "Vida", "quantity": "10", "min_quantity": "2", "_line": 2},
+        {"name": "Kodsuz somun", "unit": "kutu"},
+    ]
+    res = client.post("/api/import", json={"items": rows})
+    assert res.status_code == 200 and res.json() == {"created": 2, "skipped": 0}
+    items = client.get("/api/products").json()["items"]
+    assert sorted(i["name"] for i in items) == ["Kodsuz somun", "Vida"]
+    vida = next(i for i in items if i["name"] == "Vida")
+    assert vida["sku"] == "I-1" and vida["quantity"] == 10
+    hist = client.get(f"/api/products/{vida['id']}/movements").json()
+    assert hist[0]["note"] == "CSV içe aktarma"
+
+
+def test_import_skips_existing_codes(client):
+    make(client, sku="DUP-1", name="Eski", quantity=1)
+    res = client.post("/api/import", json={"items": [{"sku": "dup-1", "name": "Yeni"}, {"sku": "N-1", "name": "Başka"}]})
+    assert res.json() == {"created": 1, "skipped": 1}
+    assert client.get("/api/products", params={"q": "eski"}).json()["total"] == 1
+    assert client.get("/api/products", params={"q": "yeni"}).json()["total"] == 0
+
+
+def test_import_rejects_whole_file_on_bad_row(client):
+    rows = [{"sku": "OK-1", "name": "İyi"}, {"sku": "a b", "name": "Kötü", "_line": 7}, {"sku": "X", "name": "  "}]
+    res = client.post("/api/import", json={"items": rows})
+    assert res.status_code == 422
+    assert "Satır 7" in res.json()["detail"]
+    assert client.get("/api/products").json()["total"] == 0
+
+
+def test_import_limits_and_auth(client):
+    assert client.post("/api/import", json={"items": []}).status_code == 422
+    too_many = [{"name": f"u{i}"} for i in range(501)]
+    assert client.post("/api/import", json={"items": too_many}).status_code == 422
+    client.headers.pop("X-Remote-User")
+    assert client.post("/api/import", json={"items": [{"name": "x"}]}).status_code == 401
+
+
+# ---------- Sayım ----------
+def count(client, items, note="Raf A sayımı"):
+    return client.post("/api/count", json={"note": note, "items": items})
+
+
+def test_count_applies_only_differences(client):
+    a = make(client, sku="A", quantity=10)
+    b = make(client, sku="B", quantity=5)
+    res = count(client, [
+        {"product_id": a["id"], "expected": 10, "counted": 8},
+        {"product_id": b["id"], "expected": 5, "counted": 5},
+    ])
+    assert res.status_code == 200
+    body = res.json()
+    assert body["changed"] == 1 and body["items"][0]["before"] == 10 and body["items"][0]["after"] == 8
+    assert client.get(f"/api/products/{a['id']}").json()["quantity"] == 8
+    assert len(client.get(f"/api/products/{b['id']}/movements").json()) == 1
+    top = client.get(f"/api/products/{a['id']}/movements").json()[0]
+    assert top["kind"] == "adjust" and top["delta"] == -2 and top["note"] == "Sayım: Raf A sayımı"
+
+
+def test_count_rejects_changed_stock_and_changes_nothing(client):
+    a = make(client, sku="A", quantity=10)
+    b = make(client, sku="B", quantity=5)
+    move(client, b["id"], "out", 1)
+    res = count(client, [
+        {"product_id": a["id"], "expected": 10, "counted": 9},
+        {"product_id": b["id"], "expected": 5, "counted": 5},
+    ])
+    assert res.status_code == 409
+    assert client.get(f"/api/products/{a['id']}").json()["quantity"] == 10
+
+
+def test_count_validation(client):
+    a = make(client, quantity=1)
+    ok = {"product_id": a["id"], "expected": 1, "counted": 2}
+    assert count(client, [ok], note="ab").status_code == 422
+    assert count(client, [ok, ok]).status_code == 422
+    assert count(client, []).status_code == 422
+    assert count(client, [{"product_id": a["id"], "expected": 1, "counted": -1}]).status_code == 422
+    assert count(client, [{"product_id": 99999, "expected": 0, "counted": 1}]).status_code == 404
+    client.headers.pop("X-Remote-User")
+    assert count(client, [ok]).status_code == 401
+
+
+# ---------- Ödünç düzenleme ve gecikenler ----------
+def test_loan_edit_open_record(client):
+    loan = lend(client, item="Matkap", borrower="Ali")
+    res = client.put(f"/api/loans/{loan['id']}", json={
+        "item": "Şarjlı matkap", "borrower": "Veli", "quantity": 2, "due_date": "2000-01-01", "note": "kutusuyla",
+    })
+    assert res.status_code == 200
+    body = res.json()
+    assert body["item"] == "Şarjlı matkap" and body["borrower"] == "Veli" and body["overdue"] is True
+    assert body["lent_by"] == loan["lent_by"] and body["lent_at"] == loan["lent_at"]
+
+
+def test_loan_edit_rules(client):
+    loan = lend(client)
+    ok = {"item": "x", "borrower": "y"}
+    assert client.put(f"/api/loans/{loan['id']}", json={"item": "", "borrower": "y"}).status_code == 422
+    assert client.put("/api/loans/99999", json=ok).status_code == 404
+    client.post(f"/api/loans/{loan['id']}/return")
+    assert client.put(f"/api/loans/{loan['id']}", json=ok).status_code == 409
+
+
+def test_loans_overdue_filter(client):
+    lend(client, item="Gecikmiş", due_date="2000-01-01")
+    lend(client, item="Zamanı var", due_date="2099-01-01")
+    lend(client, item="Tarihsiz")
+    rows = client.get("/api/loans", params={"status": "overdue"}).json()
+    assert [r["item"] for r in rows] == ["Gecikmiş"]

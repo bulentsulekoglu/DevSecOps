@@ -50,6 +50,7 @@ async function loadSummary() {
   $("c-empty").textContent = s.empty;
   $("c-loans").textContent = s.loans_open;
   $("c-overdue").textContent = s.loans_overdue;
+  updateBanner(s);
 }
 
 async function loadCategories() {
@@ -112,6 +113,9 @@ function renderRows() {
     const e = el("button", "Düzenle", { type: "button" });
     e.addEventListener("click", () => openProductForm(it));
     act.appendChild(e);
+    const lb = el("button", "Etiket", { type: "button" });
+    lb.addEventListener("click", () => printLabel(it));
+    act.appendChild(lb);
     tr.appendChild(act);
     body.appendChild(tr);
   }
@@ -199,6 +203,9 @@ function openProductForm(product) {
     inputs.location.value = product.location;
   }
   form.appendChild(field("Kod / barkod (isteğe bağlı)", inputs.sku));
+  const scanBtn = el("button", "Kamerayla oku", { type: "button" });
+  scanBtn.addEventListener("click", () => startScan((code) => { inputs.sku.value = code; }));
+  form.appendChild(scanBtn);
   form.appendChild(field("Ürün adı", inputs.name));
   form.appendChild(field("Kategori", inputs.category));
   form.appendChild(field("Birim", inputs.unit));
@@ -266,7 +273,14 @@ async function openHistory(product) {
       tr.appendChild(el("td", (r.delta > 0 ? "+" : "") + r.delta, { class: "num" }));
       tr.appendChild(el("td", r.quantity_after, { class: "num" }));
       tr.appendChild(el("td", r.username));
-      tr.appendChild(el("td", r.note));
+      const noteTd = el("td", r.note);
+      if (r === rows[0] && r.undoes === null && r.delta !== 0) {
+        const u = el("button", "Geri al", { type: "button" });
+        u.addEventListener("click", async () => { await undoMovement(product, r); closePanel(); });
+        noteTd.appendChild(document.createTextNode(" "));
+        noteTd.appendChild(u);
+      }
+      tr.appendChild(noteTd);
       table.appendChild(tr);
     }
     $("history").appendChild(table);
@@ -305,10 +319,11 @@ refresh();
 // ---------- Hızlı artır / azalt ----------
 async function quickMove(product, kind) {
   try {
-    await api("/api/products/" + product.id + "/movements",
+    const move = await api("/api/products/" + product.id + "/movements",
       sendJson("POST", { kind, quantity: 1, note: kind === "in" ? "Hızlı giriş" : "Hızlı çıkış" }));
-    say(product.name + ": " + (kind === "in" ? "+1" : "-1"), "ok");
     await refresh();
+    say(product.name + ": " + (kind === "in" ? "+1" : "-1"), "ok");
+    offerUndo(product, move);
   } catch (e) {
     say(e.message, "err");
   }
@@ -320,14 +335,15 @@ function fmtDay(day) {
 }
 
 function showView(name) {
-  const stock = name === "stock";
-  $("view-stock").hidden = !stock;
-  $("view-loans").hidden = stock;
-  $("tab-stock").classList.toggle("active", stock);
-  $("tab-loans").classList.toggle("active", !stock);
+  stopScan();
+  for (const v of ["stock", "count", "loans"]) {
+    $("view-" + v).hidden = v !== name;
+    $("tab-" + v).classList.toggle("active", v === name);
+  }
   $("panel").hidden = true;
   say("");
-  if (stock) $("q").focus();
+  if (name === "stock") { $("q").focus(); refresh(); }
+  else if (name === "count") loadCountList();
   else loadLoans();
 }
 
@@ -363,6 +379,9 @@ function renderLoans(items) {
       const b = el("button", "Geri alındı", { type: "button" });
       b.addEventListener("click", () => returnLoan(l));
       act.appendChild(b);
+      const ed = el("button", "Düzenle", { type: "button" });
+      ed.addEventListener("click", () => openLoanForm(l));
+      act.appendChild(ed);
     }
     tr.appendChild(act);
     body.appendChild(tr);
@@ -379,7 +398,7 @@ async function returnLoan(loan) {
   }
 }
 
-function openLoanForm() {
+function openLoanForm(loan) {
   const form = $("loan-form");
   form.replaceChildren();
   const item = el("input", null, { type: "text", maxlength: "120", required: "required" });
@@ -388,6 +407,13 @@ function openLoanForm() {
   const who = el("input", null, { type: "text", maxlength: "80", required: "required" });
   const due = el("input", null, { type: "date" });
   const note = el("input", null, { type: "text", maxlength: "200" });
+  if (loan) {
+    item.value = loan.item;
+    qty.value = loan.quantity;
+    who.value = loan.borrower;
+    due.value = loan.due_date || "";
+    note.value = loan.note;
+  }
   form.appendChild(field("Ne verildi", item));
   form.appendChild(field("Adet", qty));
   form.appendChild(field("Kime", who));
@@ -402,14 +428,16 @@ function openLoanForm() {
     ev.preventDefault();
     ok.disabled = true;
     try {
-      await api("/api/loans", sendJson("POST", {
+      const payload = {
         item: item.value,
         quantity: Number(qty.value || 1),
         borrower: who.value,
         due_date: due.value || null,
         note: note.value,
-      }));
-      say("Kayıt eklendi", "ok");
+      };
+      if (loan) await api("/api/loans/" + loan.id, sendJson("PUT", payload));
+      else await api("/api/loans", sendJson("POST", payload));
+      say(loan ? "Kayıt güncellendi" : "Kayıt eklendi", "ok");
       form.hidden = true;
       await Promise.all([loadLoans(), loadSummary()]);
     } catch (e) {
@@ -425,4 +453,236 @@ function openLoanForm() {
 $("tab-stock").addEventListener("click", () => showView("stock"));
 $("tab-loans").addEventListener("click", () => showView("loans"));
 $("loan-status").addEventListener("change", loadLoans);
-$("loan-new-btn").addEventListener("click", openLoanForm);
+$("loan-new-btn").addEventListener("click", () => openLoanForm(null));
+
+// ---------- Geri al (hızlı hareketten sonra mesaj satırında) ----------
+function offerUndo(product, movement) {
+  const m = $("msg");
+  const b = el("button", "Geri al", { type: "button" });
+  b.addEventListener("click", () => undoMovement(product, movement));
+  m.appendChild(document.createTextNode(" "));
+  m.appendChild(b);
+}
+
+async function undoMovement(product, movement) {
+  try {
+    await api("/api/products/" + product.id + "/movements/" + movement.id + "/undo", { method: "POST" });
+    say(product.name + ": son hareket geri alındı", "ok");
+    await refresh();
+  } catch (e) {
+    say(e.message, "err");
+  }
+}
+
+// ---------- Kamera ile barkod okuma ----------
+let scanStream = null;
+let scanTimer = null;
+
+function stopScan() {
+  clearInterval(scanTimer);
+  scanTimer = null;
+  if (scanStream) scanStream.getTracks().forEach((t) => t.stop());
+  scanStream = null;
+  $("scan-video").srcObject = null;
+  $("scanner").hidden = true;
+}
+
+async function startScan(onCode) {
+  if (!("BarcodeDetector" in window) || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    say("Bu tarayıcı kamerayla barkod okumayı desteklemiyor (Android'de Chrome gerekir). " +
+        "Barkod okuyucu cihaz kullanıyorsanız arama kutusuna okutmanız yeterli.", "err");
+    return;
+  }
+  try {
+    const detector = new BarcodeDetector();
+    scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+    const video = $("scan-video");
+    video.srcObject = scanStream;
+    await video.play();
+    $("scan-info").textContent = "Barkodu kameraya gösterin";
+    $("scanner").hidden = false;
+    $("scanner").scrollIntoView({ block: "nearest" });
+    scanTimer = setInterval(async () => {
+      try {
+        const found = await detector.detect(video);
+        if (found.length && found[0].rawValue) {
+          const code = found[0].rawValue;
+          stopScan();
+          onCode(code);
+        }
+      } catch (e) {
+        /* bir kare okunamadıysa sonrakini dene */
+      }
+    }, 300);
+  } catch (e) {
+    stopScan();
+    say("Kamera açılamadı: izin verilmemiş ya da kamera yok", "err");
+  }
+}
+
+$("scan-btn").addEventListener("click", () => startScan((code) => {
+  $("q").value = code;
+  state.offset = 0;
+  refresh();
+}));
+$("scan-stop").addEventListener("click", stopScan);
+
+// ---------- Yazdırma ----------
+function printNow(kind) {
+  document.body.dataset.print = kind;
+  window.print();
+}
+window.addEventListener("afterprint", () => { delete document.body.dataset.print; });
+$("print-btn").addEventListener("click", () => printNow("list"));
+
+function printLabel(product) {
+  $("label-name").textContent = product.name;
+  $("label-code").textContent = product.sku || "";
+  $("label-loc").textContent = product.location ? "Konum: " + product.location : "";
+  $("label").hidden = false;
+  printNow("label");
+  $("label").hidden = true;
+}
+
+// ---------- CSV içe aktarma ----------
+function parseCsv(text) {
+  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+  const rows = [];
+  let row = [];
+  let cell = "";
+  let quoted = false;
+  let line = 1;
+  const lines = [];
+  const push = () => { row.push(cell); cell = ""; };
+  const endRow = () => { push(); rows.push(row); lines.push(line); row = []; };
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quoted) {
+      if (c === '"' && text[i + 1] === '"') { cell += '"'; i++; }
+      else if (c === '"') quoted = false;
+      else { if (c === "\n") line++; cell += c; }
+    } else if (c === '"') quoted = true;
+    else if (c === "," || c === ";") push();
+    else if (c === "\n") { endRow(); line++; }
+    else if (c !== "\r") cell += c;
+  }
+  if (cell !== "" || row.length) endRow();
+  return { rows, lines };
+}
+
+const CSV_FIELDS = {
+  kod: "sku", barkod: "sku", sku: "sku",
+  ad: "name", "ürün": "name", "ürün adı": "name", name: "name",
+  kategori: "category", birim: "unit", konum: "location",
+  miktar: "quantity", adet: "quantity", minimum: "min_quantity",
+};
+
+async function importCsv(file) {
+  try {
+    const { rows, lines } = parseCsv(await file.text());
+    if (rows.length < 2) throw new Error("Dosyada başlık satırından başka satır yok");
+    const cols = rows[0].map((h) => CSV_FIELDS[h.trim().toLowerCase()] || null);
+    if (!cols.includes("name")) throw new Error("Başlık satırında 'ad' sütunu bulunamadı");
+    const items = [];
+    for (let r = 1; r < rows.length; r++) {
+      if (rows[r].every((v) => v.trim() === "")) continue;
+      const item = { _line: lines[r] };
+      rows[r].forEach((v, i) => { if (cols[i] && v.trim() !== "") item[cols[i]] = v.trim(); });
+      items.push(item);
+    }
+    if (!items.length) throw new Error("İçe aktarılacak satır yok");
+    const res = await api("/api/import", sendJson("POST", { items }));
+    say(res.created + " ürün eklendi" + (res.skipped ? ", " + res.skipped + " satır atlandı (kod zaten kayıtlı)" : ""), "ok");
+    await refresh();
+  } catch (e) {
+    say(e.message, "err");
+  } finally {
+    $("import-file").value = "";
+  }
+}
+
+$("import-btn").addEventListener("click", () => $("import-file").click());
+$("import-file").addEventListener("change", (ev) => { if (ev.target.files[0]) importCsv(ev.target.files[0]); });
+
+// ---------- Sayım ----------
+const countState = { items: [] };
+
+function countDiffCell(td, input, item) {
+  const v = input.value.trim();
+  td.className = "num";
+  if (v === "") { td.textContent = "-"; return; }
+  const d = Number(v) - item.quantity;
+  td.textContent = (d > 0 ? "+" : "") + d;
+  td.className = "num " + (d > 0 ? "diff-pos" : d < 0 ? "diff-neg" : "");
+}
+
+async function loadCountList() {
+  try {
+    const p = new URLSearchParams({ limit: 200, offset: 0 });
+    if ($("count-q").value.trim()) p.set("q", $("count-q").value.trim());
+    const data = await api("/api/products?" + p.toString());
+    countState.items = data.items;
+    const body = $("count-rows");
+    body.replaceChildren();
+    if (!data.items.length) {
+      const tr = el("tr");
+      tr.appendChild(el("td", "Ürün bulunamadı", { colspan: "5" }));
+      body.appendChild(tr);
+    }
+    for (const it of data.items) {
+      const tr = el("tr");
+      tr.appendChild(el("td", it.name));
+      tr.appendChild(el("td", it.location));
+      tr.appendChild(el("td", it.quantity + " " + it.unit, { class: "num" }));
+      const inTd = el("td", null, { class: "num" });
+      const input = el("input", null, { type: "number", min: "0", max: "1000000", "aria-label": it.name + " sayılan" });
+      const diffTd = el("td", "-", { class: "num" });
+      input.addEventListener("input", () => countDiffCell(diffTd, input, it));
+      it.input = input;
+      inTd.appendChild(input);
+      tr.appendChild(inTd);
+      tr.appendChild(diffTd);
+      body.appendChild(tr);
+    }
+    if (data.total > data.items.length) say("İlk 200 ürün gösteriliyor, aramayı daraltın", "");
+    else say("");
+  } catch (e) {
+    say(e.message, "err");
+  }
+}
+
+async function applyCount() {
+  const items = countState.items
+    .filter((it) => it.input.value.trim() !== "")
+    .map((it) => ({ product_id: it.id, expected: it.quantity, counted: Number(it.input.value) }));
+  if (!items.length) { say("Önce en az bir ürünün sayılan miktarını girin", "err"); return; }
+  try {
+    const res = await api("/api/count", sendJson("POST", { note: $("count-note").value, items }));
+    say(res.changed + " üründe fark bulundu ve düzeltildi", "ok");
+    $("count-note").value = "";
+    await Promise.all([loadCountList(), loadSummary()]);
+    say(res.changed + " üründe fark bulundu ve düzeltildi", "ok");
+  } catch (e) {
+    say(e.message, "err");
+  }
+}
+
+$("count-load").addEventListener("click", loadCountList);
+$("count-q").addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.preventDefault(); loadCountList(); } });
+$("count-apply").addEventListener("click", applyCount);
+$("tab-count").addEventListener("click", () => { showView("count"); });
+
+// ---------- Gecikme uyarısı ----------
+function updateBanner(s) {
+  const b = $("overdue-banner");
+  if (s.loans_overdue > 0) {
+    b.textContent = s.loans_overdue + " ödünç kaydının geri alınma tarihi geçti — görmek için tıklayın";
+    b.hidden = false;
+  } else {
+    b.hidden = true;
+  }
+}
+$("overdue-banner").addEventListener("click", () => {
+  $("loan-status").value = "overdue";
+  showView("loans");
+});

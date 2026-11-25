@@ -12,7 +12,7 @@ import time
 from contextlib import asynccontextmanager, contextmanager
 from datetime import date
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import psycopg
 from fastapi import FastAPI, HTTPException, Query, Request, Response
@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from psycopg.errors import UniqueViolation
 from psycopg.rows import dict_row
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 BASE = Path(__file__).parent
 USER_RE = re.compile(r"^[A-Za-z0-9._@-]{1,64}$")
@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS loans (
     returned_by TEXT
 );
 CREATE INDEX IF NOT EXISTS loans_open_idx ON loans (returned_at, due_date);
+ALTER TABLE movements ADD COLUMN IF NOT EXISTS undoes BIGINT REFERENCES movements (id);
 """
 
 
@@ -456,7 +457,7 @@ def product_movements(product_id: int, limit: int = Query(default=50, ge=1, le=2
         row_or_404(conn.execute("SELECT id FROM products WHERE id = %s", (product_id,)).fetchone())
         return conn.execute(
             """
-            SELECT id, kind, delta, quantity_after, note, username, created_at
+            SELECT id, kind, delta, quantity_after, note, username, created_at, undoes
             FROM movements WHERE product_id = %s ORDER BY id DESC LIMIT %s
             """,
             (product_id, limit),
@@ -520,7 +521,7 @@ class LoanIn(BaseModel):
 
 @app.get("/api/loans")
 def list_loans(
-    status: Literal["open", "returned", "all"] = "open",
+    status: Literal["open", "overdue", "returned", "all"] = "open",
     limit: int = Query(default=100, ge=1, le=200),
 ):
     with db() as conn:
@@ -531,6 +532,7 @@ def list_loans(
             FROM loans
             WHERE (%(status)s::text = 'all'
                    OR (%(status)s::text = 'open' AND returned_at IS NULL)
+                   OR (%(status)s::text = 'overdue' AND returned_at IS NULL AND due_date < current_date)
                    OR (%(status)s::text = 'returned' AND returned_at IS NOT NULL))
             ORDER BY (returned_at IS NOT NULL), returned_at DESC NULLS LAST, due_date NULLS LAST, id DESC
             LIMIT %(limit)s
@@ -571,3 +573,177 @@ def return_loan(loan_id: int, request: Request):
             """,
             (user, loan_id),
         ).fetchone()
+
+
+# ---------- Ödünç kaydını düzenle ----------
+@app.put("/api/loans/{loan_id}")
+def update_loan(loan_id: int, body: LoanIn):
+    with db() as conn:
+        row = conn.execute("SELECT id, returned_at FROM loans WHERE id = %s FOR UPDATE", (loan_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Kayıt bulunamadı")
+        if row["returned_at"] is not None:
+            raise HTTPException(status_code=409, detail="Geri alınmış kayıt düzenlenemez")
+        return conn.execute(
+            """
+            UPDATE loans SET item = %s, quantity = %s, borrower = %s, due_date = %s, note = %s
+            WHERE id = %s
+            RETURNING id, item, quantity, borrower, due_date, note, lent_by, lent_at, returned_at, returned_by,
+                      (due_date IS NOT NULL AND due_date < current_date) AS overdue
+            """,
+            (body.item, body.quantity, body.borrower, body.due_date, body.note, loan_id),
+        ).fetchone()
+
+
+# ---------- Son hareketi geri al ----------
+@app.post("/api/products/{product_id}/movements/{movement_id}/undo", status_code=201)
+def undo_movement(product_id: int, movement_id: int, request: Request):
+    user = current_user(request)
+    with db() as conn:
+        product = row_or_404(
+            conn.execute(
+                "SELECT id, quantity FROM products WHERE id = %s AND active FOR UPDATE", (product_id,)
+            ).fetchone()
+        )
+        last = conn.execute(
+            "SELECT id, delta, undoes FROM movements WHERE product_id = %s ORDER BY id DESC LIMIT 1",
+            (product_id,),
+        ).fetchone()
+        if last is None or last["id"] != movement_id:
+            raise HTTPException(status_code=409, detail="Bu hareketten sonra yeni bir hareket var, geri alınamaz")
+        if last["undoes"] is not None:
+            raise HTTPException(status_code=409, detail="Geri alma işlemi geri alınamaz, yeni bir hareket girin")
+        if last["delta"] == 0:
+            raise HTTPException(status_code=409, detail="Bu hareket stoğu değiştirmediği için geri alınacak bir şey yok")
+        new = product["quantity"] - last["delta"]
+        if new < 0 or new > MAX_QTY:
+            raise HTTPException(status_code=409, detail="Geri alınırsa stok sınırların dışına çıkar")
+        conn.execute("UPDATE products SET quantity = %s, updated_at = now() WHERE id = %s", (new, product_id))
+        return conn.execute(
+            """
+            INSERT INTO movements (product_id, kind, delta, quantity_after, note, username, undoes)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            RETURNING id, product_id, kind, delta, quantity_after, note, username, created_at, undoes
+            """,
+            (
+                product_id,
+                "out" if last["delta"] > 0 else "in",
+                -last["delta"],
+                new,
+                f"Geri alındı: #{movement_id}",
+                user,
+                movement_id,
+            ),
+        ).fetchone()
+
+
+# ---------- CSV içe aktarma (tarayıcı CSV'yi okur, satırları JSON olarak gönderir) ----------
+class ImportIn(BaseModel):
+    items: list[dict[str, Any]] = Field(min_length=1, max_length=500)
+
+
+@app.post("/api/import")
+def import_products(body: ImportIn, request: Request):
+    user = current_user(request)
+    parsed = []
+    errors = []
+    for index, raw in enumerate(body.items, start=2):
+        line = raw.get("_line", index)
+        try:
+            parsed.append(ProductCreate.model_validate(raw))
+        except ValidationError as exc:
+            msgs = "; ".join(
+                ".".join(str(p) for p in e["loc"]) + ": " + str(e["msg"]).replace("Value error, ", "")
+                for e in exc.errors()
+            )
+            errors.append(f"Satır {line}: {msgs}")
+    if errors:
+        more = " ..." if len(errors) > 10 else ""
+        raise HTTPException(status_code=422, detail=" | ".join(errors[:10]) + more)
+    created = 0
+    skipped = 0
+    with db() as conn:
+        for p in parsed:
+            row = conn.execute(
+                """
+                INSERT INTO products (sku, name, category, unit, location, quantity, min_quantity)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (sku) DO NOTHING
+                RETURNING id
+                """,
+                (p.sku, p.name, p.category, p.unit, p.location, p.quantity, p.min_quantity),
+            ).fetchone()
+            if row is None:
+                skipped += 1
+                continue
+            created += 1
+            if p.quantity > 0:
+                conn.execute(
+                    """
+                    INSERT INTO movements (product_id, kind, delta, quantity_after, note, username)
+                    VALUES (%s, 'in', %s, %s, 'CSV içe aktarma', %s)
+                    """,
+                    (row["id"], p.quantity, p.quantity, user),
+                )
+    return {"created": created, "skipped": skipped}
+
+
+# ---------- Sayım: sayılan miktarları toplu uygula ----------
+class CountItem(BaseModel):
+    product_id: int
+    expected: int = Field(ge=0, le=MAX_QTY)
+    counted: int = Field(ge=0, le=1_000_000)
+
+
+class CountIn(BaseModel):
+    note: str = Field(max_length=150)
+    items: list[CountItem] = Field(min_length=1, max_length=200)
+
+    @field_validator("note")
+    @classmethod
+    def tidy_note(cls, v: str) -> str:
+        return _clean(v)
+
+    @model_validator(mode="after")
+    def check(self):
+        if len(self.note) < 3:
+            raise ValueError("Sayım için bir açıklama yazın (ör. Raf A sayımı)")
+        if len({i.product_id for i in self.items}) != len(self.items):
+            raise ValueError("Aynı ürün listede birden fazla kez var")
+        return self
+
+
+@app.post("/api/count")
+def apply_count(body: CountIn, request: Request):
+    user = current_user(request)
+    note = "Sayım: " + body.note
+    changes = []
+    with db() as conn:
+        for item in sorted(body.items, key=lambda i: i.product_id):
+            row = conn.execute(
+                "SELECT id, name, quantity FROM products WHERE id = %s AND active FOR UPDATE",
+                (item.product_id,),
+            ).fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail=f"Ürün bulunamadı (#{item.product_id})")
+            if row["quantity"] != item.expected:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"{row['name']}: stok sayım sırasında değişmiş, listeyi yenileyip tekrar deneyin",
+                )
+            if row["quantity"] == item.counted:
+                continue
+            conn.execute(
+                "UPDATE products SET quantity = %s, updated_at = now() WHERE id = %s", (item.counted, row["id"])
+            )
+            conn.execute(
+                """
+                INSERT INTO movements (product_id, kind, delta, quantity_after, note, username)
+                VALUES (%s, 'adjust', %s, %s, %s, %s)
+                """,
+                (row["id"], item.counted - row["quantity"], item.counted, note, user),
+            )
+            changes.append(
+                {"product_id": row["id"], "name": row["name"], "before": row["quantity"], "after": item.counted}
+            )
+    return {"changed": len(changes), "items": changes}
