@@ -338,3 +338,45 @@ def test_loans_require_user(client):
     assert client.get("/api/loans").status_code == 401
     assert client.post("/api/loans", json={"item": "x", "borrower": "y"}).status_code == 401
     assert client.post("/api/loans/1/return").status_code == 401
+
+
+# ---------- Açılış dayanıklılığı ----------
+def _fake_db(failures):
+    import contextlib
+
+    import psycopg
+
+    state = {"left": failures, "ran": 0}
+
+    class Conn:
+        def execute(self, _sql):
+            state["ran"] += 1
+
+    @contextlib.contextmanager
+    def fake():
+        if state["left"] > 0:
+            state["left"] -= 1
+            raise psycopg.OperationalError("henüz hazır değil")
+        yield Conn()
+
+    return fake, state
+
+
+def test_init_schema_waits_for_database(monkeypatch):
+    fake, state = _fake_db(failures=2)
+    monkeypatch.setattr(main, "db", fake)
+    monkeypatch.setattr(main.time, "sleep", lambda _s: None)
+    main.init_schema(attempts=5, delay=0)
+    assert state["ran"] == 1 and state["left"] == 0
+
+
+def test_init_schema_gives_up_after_attempts(monkeypatch):
+    import psycopg
+    import pytest
+
+    fake, state = _fake_db(failures=99)
+    monkeypatch.setattr(main, "db", fake)
+    monkeypatch.setattr(main.time, "sleep", lambda _s: None)
+    with pytest.raises(psycopg.OperationalError):
+        main.init_schema(attempts=3, delay=0)
+    assert state["left"] == 96
