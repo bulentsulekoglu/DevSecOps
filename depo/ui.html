@@ -13,13 +13,20 @@
   </header>
 
   <main>
+    <nav class="tabs" aria-label="Bölümler">
+      <button id="tab-stock" type="button" class="active">Stok</button>
+      <button id="tab-loans" type="button">Ödünç verilenler</button>
+    </nav>
+
     <section class="cards" aria-label="Özet">
       <div class="card"><span id="c-products">-</span><small>Ürün çeşidi</small></div>
       <div class="card"><span id="c-units">-</span><small>Toplam adet</small></div>
       <div class="card warn"><span id="c-low">-</span><small>Kritik stok</small></div>
       <div class="card bad"><span id="c-empty">-</span><small>Tükenen</small></div>
+      <div class="card warn"><span id="c-loans">-</span><small>Geri alınacak (<b id="c-overdue">-</b> gecikmiş)</small></div>
     </section>
 
+    <div id="view-stock">
     <section class="toolbar">
       <input id="q" type="search" placeholder="Ara: ad, kod, barkod, kategori, konum" autocomplete="off" autofocus>
       <select id="cat"><option value="">Tüm kategoriler</option></select>
@@ -40,6 +47,26 @@
       <button id="prev" type="button">Önceki</button>
       <span id="page-info"></span>
       <button id="next" type="button">Sonraki</button>
+    </div>
+
+    </div>
+
+    <div id="view-loans" hidden>
+      <section class="toolbar">
+        <select id="loan-status">
+          <option value="open">Geri alınmayı bekleyenler</option>
+          <option value="returned">Geri alınanlar</option>
+          <option value="all">Hepsi</option>
+        </select>
+        <button id="loan-new-btn" type="button">Yeni kayıt</button>
+      </section>
+      <form id="loan-form" hidden autocomplete="off"></form>
+      <table>
+        <thead>
+          <tr><th>Ne</th><th class="num">Adet</th><th>Kime</th><th>Verildiği</th><th>Geri tarihi</th><th>Not</th><th>İşlem</th></tr>
+        </thead>
+        <tbody id="loan-rows"></tbody>
+      </table>
     </div>
 
     <section id="panel" class="panel" hidden>

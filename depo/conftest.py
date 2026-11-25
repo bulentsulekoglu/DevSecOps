@@ -11,6 +11,6 @@ def client():
     """Gerçek PostgreSQL'e karşı çalışır; her testten önce tablolar boşaltılır."""
     with TestClient(main.app) as c:
         with main.db() as conn:
-            conn.execute("TRUNCATE movements, products RESTART IDENTITY CASCADE")
+            conn.execute("TRUNCATE movements, products, loans RESTART IDENTITY CASCADE")
         c.headers.update(USER)
         yield c
