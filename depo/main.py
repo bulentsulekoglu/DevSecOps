@@ -90,10 +90,22 @@ def db():
         conn.close()
 
 
+def init_schema(attempts: int = 30, delay: float = 2.0) -> None:
+    """Tabloları kurar. Veritabanı henüz hazır değilse (ilk açılış) bekleyip tekrar dener."""
+    for n in range(1, attempts + 1):
+        try:
+            with db() as conn:
+                conn.execute(SCHEMA)
+            return
+        except psycopg.OperationalError:
+            if n == attempts:
+                raise
+            time.sleep(delay)
+
+
 @asynccontextmanager
 async def lifespan(_app):
-    with db() as conn:
-        conn.execute(SCHEMA)
+    init_schema()
     yield
 
 
