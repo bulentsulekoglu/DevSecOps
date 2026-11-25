@@ -78,7 +78,6 @@ def test_duplicate_sku_is_conflict_case_insensitive(client):
 
 def test_validation_errors(client):
     bad = [
-        {"sku": "", "name": "x"},
         {"sku": "a b", "name": "x"},
         {"sku": "A1", "name": "   "},
         {"sku": "A1", "name": "x", "quantity": -1},
@@ -253,3 +252,89 @@ def test_csv_export_blocks_formula_injection(client):
     assert text.splitlines()[0] == "kod,ad,kategori,birim,konum,miktar,minimum"
     assert "'=HYPERLINK" in text and "'+cmd" in text
     assert ",=HYPERLINK" not in text
+
+
+# ---------- Ürün kodu isteğe bağlı ----------
+def test_sku_is_optional(client):
+    r1 = client.post("/api/products", json={"name": "Kodsuz vida", "quantity": 3})
+    r2 = client.post("/api/products", json={"name": "Kodsuz somun", "sku": "   "})
+    assert r1.status_code == 201 and r2.status_code == 201
+    assert r1.json()["sku"] is None and r2.json()["sku"] is None
+    assert client.get("/api/products", params={"q": "kodsuz"}).json()["total"] == 2
+    pid = r1.json()["id"]
+    up = client.put(f"/api/products/{pid}", json={"name": "Kodsuz vida", "sku": "kv-1"})
+    assert up.json()["sku"] == "KV-1"
+    up = client.put(f"/api/products/{pid}", json={"name": "Kodsuz vida"})
+    assert up.json()["sku"] is None
+
+
+def test_csv_handles_products_without_code(client):
+    client.post("/api/products", json={"name": "Kodsuz"})
+    text = client.get("/api/export.csv").content.decode("utf-8-sig")
+    assert "None" not in text
+    assert ",Kodsuz,,adet" in text
+
+
+# ---------- Ödünç verilenler ----------
+def lend(client, item="Matkap", borrower="Ali", **extra):
+    res = client.post("/api/loans", json={"item": item, "borrower": borrower, **extra})
+    assert res.status_code == 201, res.text
+    return res.json()
+
+
+def test_loan_create_and_list_open(client):
+    loan = lend(client, quantity=2, due_date="2099-01-01", note="  hafta sonu  ")
+    assert loan["item"] == "Matkap" and loan["quantity"] == 2 and loan["borrower"] == "Ali"
+    assert loan["note"] == "hafta sonu" and loan["lent_by"] == USER["X-Remote-User"]
+    assert loan["returned_at"] is None and loan["overdue"] is False
+    assert [r["id"] for r in client.get("/api/loans").json()] == [loan["id"]]
+
+
+def test_loan_validation(client):
+    bad = [
+        {"item": "", "borrower": "Ali"},
+        {"item": "x", "borrower": "   "},
+        {"item": "x", "borrower": "a", "quantity": 0},
+        {"item": "x", "borrower": "a", "due_date": "yarın"},
+        {"borrower": "Ali"},
+    ]
+    for body in bad:
+        assert client.post("/api/loans", json=body).status_code == 422, body
+    assert client.get("/api/loans", params={"status": "bogus"}).status_code == 422
+
+
+def test_loan_return_flow(client):
+    loan = lend(client)
+    res = client.post(f"/api/loans/{loan['id']}/return")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["returned_at"] is not None and body["returned_by"] == USER["X-Remote-User"]
+    assert client.get("/api/loans").json() == []
+    assert len(client.get("/api/loans", params={"status": "returned"}).json()) == 1
+    assert len(client.get("/api/loans", params={"status": "all"}).json()) == 1
+    assert client.post(f"/api/loans/{loan['id']}/return").status_code == 409
+    assert client.post("/api/loans/99999/return").status_code == 404
+
+
+def test_loan_overdue_order_and_summary(client):
+    lend(client, item="Tarihsiz")
+    lend(client, item="Zamanı var", due_date="2099-01-01")
+    lend(client, item="Gecikmiş", due_date="2000-01-01")
+    rows = client.get("/api/loans").json()
+    assert [r["item"] for r in rows] == ["Gecikmiş", "Zamanı var", "Tarihsiz"]
+    assert [r["overdue"] for r in rows] == [True, False, False]
+    s = client.get("/api/summary").json()
+    assert (s["loans_open"], s["loans_overdue"]) == (3, 1)
+
+
+def test_loans_do_not_touch_stock(client):
+    p = make(client, quantity=5)
+    lend(client, item=p["name"], quantity=3)
+    assert client.get(f"/api/products/{p['id']}").json()["quantity"] == 5
+
+
+def test_loans_require_user(client):
+    client.headers.pop("X-Remote-User")
+    assert client.get("/api/loans").status_code == 401
+    assert client.post("/api/loans", json={"item": "x", "borrower": "y"}).status_code == 401
+    assert client.post("/api/loans/1/return").status_code == 401

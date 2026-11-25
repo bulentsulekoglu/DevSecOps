@@ -10,6 +10,7 @@ import os
 import re
 import time
 from contextlib import asynccontextmanager, contextmanager
+from datetime import date
 from pathlib import Path
 from typing import Literal
 
@@ -32,7 +33,7 @@ LATENCY = Histogram("http_request_duration_seconds", "İstek süresi", ["method"
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS products (
     id           BIGSERIAL PRIMARY KEY,
-    sku          TEXT NOT NULL UNIQUE,
+    sku          TEXT UNIQUE,
     name         TEXT NOT NULL,
     category     TEXT NOT NULL DEFAULT '',
     unit         TEXT NOT NULL DEFAULT 'adet',
@@ -54,6 +55,21 @@ CREATE TABLE IF NOT EXISTS movements (
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS movements_product_idx ON movements (product_id, id DESC);
+-- Eski kurulumlarda ürün kodu zorunluydu: zorunluluğu kaldır (tekrar çalıştırılabilir)
+ALTER TABLE products ALTER COLUMN sku DROP NOT NULL;
+CREATE TABLE IF NOT EXISTS loans (
+    id          BIGSERIAL PRIMARY KEY,
+    item        TEXT NOT NULL,
+    quantity    INTEGER NOT NULL DEFAULT 1 CHECK (quantity >= 1),
+    borrower    TEXT NOT NULL,
+    due_date    DATE,
+    note        TEXT NOT NULL DEFAULT '',
+    lent_by     TEXT NOT NULL,
+    lent_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    returned_at TIMESTAMPTZ,
+    returned_by TEXT
+);
+CREATE INDEX IF NOT EXISTS loans_open_idx ON loans (returned_at, due_date);
 """
 
 
@@ -90,7 +106,7 @@ def _clean(value: str) -> str:
 
 
 class ProductIn(BaseModel):
-    sku: str = Field(min_length=1, max_length=64)
+    sku: str | None = Field(default=None, max_length=64)
     name: str = Field(min_length=1, max_length=120)
     category: str = Field(default="", max_length=60)
     unit: str = Field(default="adet", min_length=1, max_length=20)
@@ -99,8 +115,12 @@ class ProductIn(BaseModel):
 
     @field_validator("sku")
     @classmethod
-    def check_sku(cls, v: str) -> str:
+    def check_sku(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
         v = v.strip().upper()
+        if not v:
+            return None
         if not SKU_RE.match(v):
             raise ValueError("Ürün kodu yalnızca harf, rakam ve . _ / - içerebilir")
         return v
@@ -157,7 +177,7 @@ def row_or_404(row):
 
 
 def csv_safe(value) -> str:
-    text = str(value)
+    text = "" if value is None else str(value)
     if text[:1] in ("=", "+", "-", "@", "\t", "\r"):
         return "'" + text
     return text
@@ -245,7 +265,14 @@ def summary():
             FROM products WHERE active
             """
         ).fetchone()
-    return row
+        loans = conn.execute(
+            """
+            SELECT count(*) FILTER (WHERE returned_at IS NULL) AS loans_open,
+                   count(*) FILTER (WHERE returned_at IS NULL AND due_date < current_date) AS loans_overdue
+            FROM loans
+            """
+        ).fetchone()
+    return {**row, **loans}
 
 
 @app.get("/api/categories")
@@ -274,7 +301,7 @@ def list_products(
             WHERE active
               AND (%(q)s::text IS NULL
                    OR strpos(lower(name), %(q)s::text) > 0
-                   OR strpos(lower(sku), %(q)s::text) > 0
+                   OR strpos(lower(coalesce(sku, '')), %(q)s::text) > 0
                    OR strpos(lower(category), %(q)s::text) > 0
                    OR strpos(lower(location), %(q)s::text) > 0)
               AND (%(category)s::text IS NULL OR category = %(category)s::text)
@@ -289,7 +316,7 @@ def list_products(
             WHERE active
               AND (%(q)s::text IS NULL
                    OR strpos(lower(name), %(q)s::text) > 0
-                   OR strpos(lower(sku), %(q)s::text) > 0
+                   OR strpos(lower(coalesce(sku, '')), %(q)s::text) > 0
                    OR strpos(lower(category), %(q)s::text) > 0
                    OR strpos(lower(location), %(q)s::text) > 0)
               AND (%(category)s::text IS NULL OR category = %(category)s::text)
@@ -455,3 +482,80 @@ def export_csv():
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": 'attachment; filename="depo-stok.csv"'},
     )
+
+
+# ---------- Ödünç verilenler (geri alınacak şeylerin takibi, stoktan bağımsız) ----------
+class LoanIn(BaseModel):
+    item: str = Field(min_length=1, max_length=120)
+    quantity: int = Field(default=1, ge=1, le=1_000_000)
+    borrower: str = Field(min_length=1, max_length=80)
+    due_date: date | None = None
+    note: str = Field(default="", max_length=200)
+
+    @field_validator("item", "borrower", "note")
+    @classmethod
+    def tidy_text(cls, v: str) -> str:
+        return _clean(v)
+
+    @model_validator(mode="after")
+    def not_blank(self):
+        if not self.item:
+            raise ValueError("Verilen şeyin adı boş olamaz")
+        if not self.borrower:
+            raise ValueError("Kime verildiği boş olamaz")
+        return self
+
+
+@app.get("/api/loans")
+def list_loans(
+    status: Literal["open", "returned", "all"] = "open",
+    limit: int = Query(default=100, ge=1, le=200),
+):
+    with db() as conn:
+        return conn.execute(
+            """
+            SELECT id, item, quantity, borrower, due_date, note, lent_by, lent_at, returned_at, returned_by,
+                   (returned_at IS NULL AND due_date IS NOT NULL AND due_date < current_date) AS overdue
+            FROM loans
+            WHERE (%(status)s::text = 'all'
+                   OR (%(status)s::text = 'open' AND returned_at IS NULL)
+                   OR (%(status)s::text = 'returned' AND returned_at IS NOT NULL))
+            ORDER BY (returned_at IS NOT NULL), returned_at DESC NULLS LAST, due_date NULLS LAST, id DESC
+            LIMIT %(limit)s
+            """,
+            {"status": status, "limit": limit},
+        ).fetchall()
+
+
+@app.post("/api/loans", status_code=201)
+def create_loan(body: LoanIn, request: Request):
+    user = current_user(request)
+    with db() as conn:
+        return conn.execute(
+            """
+            INSERT INTO loans (item, quantity, borrower, due_date, note, lent_by)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            RETURNING id, item, quantity, borrower, due_date, note, lent_by, lent_at, returned_at, returned_by,
+                      (due_date IS NOT NULL AND due_date < current_date) AS overdue
+            """,
+            (body.item, body.quantity, body.borrower, body.due_date, body.note, user),
+        ).fetchone()
+
+
+@app.post("/api/loans/{loan_id}/return")
+def return_loan(loan_id: int, request: Request):
+    user = current_user(request)
+    with db() as conn:
+        row = conn.execute("SELECT id, returned_at FROM loans WHERE id = %s FOR UPDATE", (loan_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Kayıt bulunamadı")
+        if row["returned_at"] is not None:
+            raise HTTPException(status_code=409, detail="Bu kayıt zaten geri alınmış")
+        return conn.execute(
+            """
+            UPDATE loans SET returned_at = now(), returned_by = %s WHERE id = %s
+            RETURNING id, item, quantity, borrower, due_date, note, lent_by, lent_at, returned_at, returned_by,
+                      FALSE AS overdue
+            """,
+            (user, loan_id),
+        ).fetchone()

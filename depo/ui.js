@@ -48,6 +48,8 @@ async function loadSummary() {
   $("c-units").textContent = s.units;
   $("c-low").textContent = s.low;
   $("c-empty").textContent = s.empty;
+  $("c-loans").textContent = s.loans_open;
+  $("c-overdue").textContent = s.loans_overdue;
 }
 
 async function loadCategories() {
@@ -83,10 +85,19 @@ function renderRows() {
     if (it.quantity === 0) tr.className = "empty";
     else if (it.min_quantity > 0 && it.quantity <= it.min_quantity) tr.className = "low";
     tr.appendChild(el("td", it.name));
-    tr.appendChild(el("td", it.sku));
+    tr.appendChild(el("td", it.sku || "-"));
     tr.appendChild(el("td", it.category));
     tr.appendChild(el("td", it.location));
-    const q = el("td", it.quantity + " " + it.unit, { class: "num qty" });
+    const q = el("td", null, { class: "num qty" });
+    const box = el("span", null, { class: "qtybox" });
+    const minus = el("button", "−", { type: "button", "aria-label": "1 azalt" });
+    minus.addEventListener("click", () => quickMove(it, "out"));
+    box.appendChild(minus);
+    box.appendChild(el("span", it.quantity + " " + it.unit));
+    const plus = el("button", "+", { type: "button", "aria-label": "1 artır" });
+    plus.addEventListener("click", () => quickMove(it, "in"));
+    box.appendChild(plus);
+    q.appendChild(box);
     tr.appendChild(q);
     tr.appendChild(el("td", it.min_quantity, { class: "num" }));
     const act = el("td", null, { class: "actions" });
@@ -170,7 +181,7 @@ function openProductForm(product) {
   openPanel(isNew ? "Yeni ürün" : "Ürünü düzenle: " + product.name);
   const form = $("form");
   const inputs = {
-    sku: el("input", null, { type: "text", maxlength: "64", required: "required" }),
+    sku: el("input", null, { type: "text", maxlength: "64" }),
     name: el("input", null, { type: "text", maxlength: "120", required: "required" }),
     category: el("input", null, { type: "text", maxlength: "60" }),
     unit: el("input", null, { type: "text", maxlength: "20", required: "required" }),
@@ -182,12 +193,12 @@ function openProductForm(product) {
   inputs.min_quantity.value = product ? product.min_quantity : 0;
   inputs.quantity.value = 0;
   if (product) {
-    inputs.sku.value = product.sku;
+    inputs.sku.value = product.sku || "";
     inputs.name.value = product.name;
     inputs.category.value = product.category;
     inputs.location.value = product.location;
   }
-  form.appendChild(field("Kod / barkod", inputs.sku));
+  form.appendChild(field("Kod / barkod (isteğe bağlı)", inputs.sku));
   form.appendChild(field("Ürün adı", inputs.name));
   form.appendChild(field("Kategori", inputs.category));
   form.appendChild(field("Birim", inputs.unit));
@@ -237,7 +248,7 @@ function openProductForm(product) {
       ok.disabled = false;
     }
   };
-  inputs.sku.focus();
+  inputs.name.focus();
 }
 
 async function openHistory(product) {
@@ -290,3 +301,128 @@ $("next").addEventListener("click", () => { state.offset += PAGE; refresh(); });
 
 api("/api/me").then((m) => { $("who").textContent = m.username; }).catch((e) => say(e.message, "err"));
 refresh();
+
+// ---------- Hızlı artır / azalt ----------
+async function quickMove(product, kind) {
+  try {
+    await api("/api/products/" + product.id + "/movements",
+      sendJson("POST", { kind, quantity: 1, note: kind === "in" ? "Hızlı giriş" : "Hızlı çıkış" }));
+    say(product.name + ": " + (kind === "in" ? "+1" : "-1"), "ok");
+    await refresh();
+  } catch (e) {
+    say(e.message, "err");
+  }
+}
+
+// ---------- Ödünç verilenler ----------
+function fmtDay(day) {
+  return new Date(day + "T00:00:00").toLocaleDateString("tr-TR");
+}
+
+function showView(name) {
+  const stock = name === "stock";
+  $("view-stock").hidden = !stock;
+  $("view-loans").hidden = stock;
+  $("tab-stock").classList.toggle("active", stock);
+  $("tab-loans").classList.toggle("active", !stock);
+  $("panel").hidden = true;
+  say("");
+  if (stock) $("q").focus();
+  else loadLoans();
+}
+
+async function loadLoans() {
+  try {
+    renderLoans(await api("/api/loans?status=" + encodeURIComponent($("loan-status").value)));
+  } catch (e) {
+    say(e.message, "err");
+  }
+}
+
+function renderLoans(items) {
+  const body = $("loan-rows");
+  body.replaceChildren();
+  if (!items.length) {
+    const tr = el("tr");
+    tr.appendChild(el("td", "Kayıt yok", { colspan: "7" }));
+    body.appendChild(tr);
+  }
+  for (const l of items) {
+    const tr = el("tr");
+    if (l.overdue) tr.className = "overdue";
+    tr.appendChild(el("td", l.item));
+    tr.appendChild(el("td", l.quantity, { class: "num" }));
+    tr.appendChild(el("td", l.borrower));
+    tr.appendChild(el("td", fmtDate(l.lent_at) + " (" + l.lent_by + ")"));
+    tr.appendChild(el("td", l.due_date ? fmtDay(l.due_date) : "-"));
+    tr.appendChild(el("td", l.note));
+    const act = el("td", null, { class: "actions" });
+    if (l.returned_at) {
+      act.textContent = "Geri alındı: " + fmtDate(l.returned_at) + " (" + l.returned_by + ")";
+    } else {
+      const b = el("button", "Geri alındı", { type: "button" });
+      b.addEventListener("click", () => returnLoan(l));
+      act.appendChild(b);
+    }
+    tr.appendChild(act);
+    body.appendChild(tr);
+  }
+}
+
+async function returnLoan(loan) {
+  try {
+    await api("/api/loans/" + loan.id + "/return", { method: "POST" });
+    say(loan.item + " geri alındı", "ok");
+    await Promise.all([loadLoans(), loadSummary()]);
+  } catch (e) {
+    say(e.message, "err");
+  }
+}
+
+function openLoanForm() {
+  const form = $("loan-form");
+  form.replaceChildren();
+  const item = el("input", null, { type: "text", maxlength: "120", required: "required" });
+  const qty = el("input", null, { type: "number", min: "1", max: "1000000" });
+  qty.value = 1;
+  const who = el("input", null, { type: "text", maxlength: "80", required: "required" });
+  const due = el("input", null, { type: "date" });
+  const note = el("input", null, { type: "text", maxlength: "200" });
+  form.appendChild(field("Ne verildi", item));
+  form.appendChild(field("Adet", qty));
+  form.appendChild(field("Kime", who));
+  form.appendChild(field("Geri gelme tarihi (isteğe bağlı)", due));
+  form.appendChild(field("Not", note));
+  const ok = el("button", "Kaydet", { type: "submit", class: "primary" });
+  const cancel = el("button", "Vazgeç", { type: "button" });
+  cancel.addEventListener("click", () => { form.hidden = true; });
+  form.appendChild(ok);
+  form.appendChild(cancel);
+  form.onsubmit = async (ev) => {
+    ev.preventDefault();
+    ok.disabled = true;
+    try {
+      await api("/api/loans", sendJson("POST", {
+        item: item.value,
+        quantity: Number(qty.value || 1),
+        borrower: who.value,
+        due_date: due.value || null,
+        note: note.value,
+      }));
+      say("Kayıt eklendi", "ok");
+      form.hidden = true;
+      await Promise.all([loadLoans(), loadSummary()]);
+    } catch (e) {
+      say(e.message, "err");
+    } finally {
+      ok.disabled = false;
+    }
+  };
+  form.hidden = false;
+  item.focus();
+}
+
+$("tab-stock").addEventListener("click", () => showView("stock"));
+$("tab-loans").addEventListener("click", () => showView("loans"));
+$("loan-status").addEventListener("change", loadLoans);
+$("loan-new-btn").addEventListener("click", openLoanForm);
