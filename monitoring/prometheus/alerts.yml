@@ -7,8 +7,8 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: "{{ $labels.env }} servisi erişilemiyor"
-          description: "{{ $labels.env }} ortamında /health kontrolü 1 dakikadır başarısız."
+          summary: "{{ $labels.env }} {{ $labels.app }} servisi erişilemiyor"
+          description: "{{ $labels.env }} ortamında {{ $labels.app }} için /health kontrolü 1 dakikadır başarısız."
 
       - alert: SunucuMetrikleriGelmiyor
         expr: up{job="node"} == 0
@@ -20,13 +20,13 @@ groups:
           description: "{{ $labels.env }} üzerindeki node_exporter 2 dakikadır yanıt vermiyor (sunucu kapalı ya da ağ sorunu olabilir)."
 
       - alert: UygulamaMetrikleriGelmiyor
-        expr: up{job="app"} == 0
+        expr: up{job=~"app|depo"} == 0
         for: 2m
         labels:
           severity: warning
         annotations:
-          summary: "{{ $labels.env }} uygulamasından metrik gelmiyor"
-          description: "{{ $labels.env }} ortamında uygulamanın /metrics adresi 2 dakikadır yanıt vermiyor."
+          summary: "{{ $labels.env }} {{ $labels.app }} uygulamasından metrik gelmiyor"
+          description: "{{ $labels.env }} ortamında {{ $labels.app }} uygulamasının /metrics adresi 2 dakikadır yanıt vermiyor."
 
   - name: kaynaklar
     rules:
@@ -69,13 +69,13 @@ groups:
   - name: http
     rules:
       - alert: SunucuHatalari5xx
-        expr: sum by (env) (increase(http_requests_total{job="app",status=~"5.."}[5m])) >= 3
+        expr: sum by (env, app) (increase(http_requests_total{job=~"app|depo",status=~"5.."}[5m])) >= 3
         for: 1m
         labels:
           severity: critical
         annotations:
-          summary: "{{ $labels.env }} uygulaması sunucu hatası (5xx) veriyor"
-          description: "{{ $labels.env }} ortamında son 5 dakikada en az 3 adet 5xx yanıtı döndü."
+          summary: "{{ $labels.env }} {{ $labels.app }} uygulaması sunucu hatası (5xx) veriyor"
+          description: "{{ $labels.env }} ortamında {{ $labels.app }} son 5 dakikada en az 3 adet 5xx yanıtı döndü."
 
   - name: yedekleme
     rules:
@@ -85,8 +85,8 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: "{{ $labels.env }} için yeni yedek gelmiyor"
-          description: "{{ $labels.env }} en yeni yedeği {{ $value | humanizeDuration }} önce alınmış (sınır 36 saat). VM'deki cron ya da runner'ın çekme işi çalışmıyor olabilir."
+          summary: "{{ $labels.env }} {{ $labels.app }} için yeni yedek gelmiyor"
+          description: "{{ $labels.env }} {{ $labels.app }} en yeni yedeği {{ $value | humanizeDuration }} önce alınmış (sınır 36 saat). VM'deki cron ya da runner'ın çekme işi çalışmıyor olabilir."
 
       - alert: YedekCekmeCalismiyor
         expr: time() - backup_pull_last_run_timestamp_seconds > 129600
@@ -112,8 +112,8 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: "{{ $labels.env }} yedeği geri yüklenemiyor"
-          description: "{{ $labels.env }} en yeni yedeğinin geçici veritabanında geri yükleme sınaması başarısız. Yedek kullanılamaz olabilir (~/backup-store/verify.log)."
+          summary: "{{ $labels.env }} {{ $labels.app }} yedeği geri yüklenemiyor"
+          description: "{{ $labels.env }} {{ $labels.app }} en yeni yedeğinin geçici veritabanında geri yükleme sınaması başarısız. Yedek kullanılamaz olabilir (~/backup-store/verify.log)."
 
       - alert: YedekSinamasiCalismiyor
         expr: time() - backup_verify_last_run_timestamp_seconds > 129600
@@ -121,7 +121,7 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "{{ $labels.env }} yedek sınaması çalışmıyor"
+          summary: "{{ $labels.env }} {{ $labels.app }} yedek sınaması çalışmıyor"
           description: "Geri yükleme sınaması {{ $value | humanizeDuration }}dir çalışmamış (runner'daki cron kontrol edilmeli)."
 
       - alert: YedekMetrikleriGelmiyor
